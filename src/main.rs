@@ -10,7 +10,7 @@ use burn::{
     grad_clipping::GradientClippingConfig,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamWConfig, GradientsParams, Optimizer},
-    tensor::{Tensor, activation::log_softmax},
+    tensor::{Tensor, activation::log_softmax, bf16},
 };
 use macroquad::prelude::*;
 use miniquad::conf::{LinuxBackend, Platform};
@@ -24,12 +24,12 @@ use parry2d::{
 use serde::Deserialize;
 use std::f32::consts::PI;
 
-pub type TrainingBackend = Autodiff<Cuda<f32, i32>>;
+pub type TrainingBackend = Autodiff<Cuda<bf16>>;
 
 pub const OBSERVATION: usize = 4;
 pub const SIZE: Complex32 = Complex32::new(1920.0, 1080.0);
 pub const GAMMA: f32 = 0.9;
-pub const CONSUMED_REWARD: f32 = 50.0;
+pub const CONSUMED_REWARD: f32 = 5.0;
 pub const N_DIRECTIONS: usize = 80;
 
 pub const AGENT_RADIUS: f32 = 5.0;
@@ -49,14 +49,14 @@ pub struct TomlConfig {
 
 struct BallEnv {
     body_pos: Complex32,
-    plant_pos: Complex32,
+    target_pos: Complex32,
 }
 
 impl BallEnv {
     fn new() -> Self {
         Self {
             body_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
-            plant_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
+            target_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
         }
     }
 
@@ -70,8 +70,8 @@ impl BallEnv {
             [[
                 self.body_pos.im(),
                 self.body_pos.re(),
-                self.plant_pos.im(),
-                self.plant_pos.re(),
+                self.target_pos.im(),
+                self.target_pos.re(),
             ]],
             &CudaDevice::default(),
         )
@@ -79,7 +79,7 @@ impl BallEnv {
 
     fn step(&mut self, action: i32) -> (Tensor<TrainingBackend, 2>, f32, bool) {
         let prev_pos = self.body_pos;
-        let prev_distance = (prev_pos - self.plant_pos).abs();
+        let prev_distance = (prev_pos - self.target_pos).abs();
 
         let action_idx = action as usize % N_DIRECTIONS;
         let angle = 2.0 * PI * (action_idx as f32) / N_DIRECTIONS as f32;
@@ -90,8 +90,8 @@ impl BallEnv {
         self.body_pos.re = self.body_pos.re().clamp(0.0, 1.0);
         self.body_pos.im = self.body_pos.im().clamp(0.0, 1.0);
 
-        let new_distance = (self.body_pos - self.plant_pos).abs();
-        let distance_improvement = prev_distance - new_distance;
+        let new_distance = (self.body_pos - self.target_pos).abs();
+        let distance_improvement = (prev_distance - new_distance) * CONSUMED_REWARD;
 
         let hit = self.hits(prev_pos);
         let reward = if hit {
@@ -108,7 +108,7 @@ impl BallEnv {
         let target_ball = Ball::new(TARGET_RADIUS / SIZE.re);
 
         let agent_pos = Isometry::translation(prev_pos.re(), prev_pos.im());
-        let target_pos = Isometry::translation(self.plant_pos.re(), self.plant_pos.im());
+        let target_pos = Isometry::translation(self.target_pos.re(), self.target_pos.im());
 
         let ray_dir = Vector2::new(
             self.body_pos.re() - prev_pos.re(),
@@ -131,7 +131,7 @@ async fn render(env: &BallEnv) {
     let to_screen = |pos: Complex32| vec2(SIZE.re() * pos.re(), SIZE.im() * pos.im());
 
     let p = to_screen(env.body_pos);
-    let t = to_screen(env.plant_pos);
+    let t = to_screen(env.target_pos);
 
     draw_circle(p.x, p.y, AGENT_RADIUS, BLUE);
     draw_circle(t.x, t.y, TARGET_RADIUS, GREEN);
@@ -142,8 +142,7 @@ async fn render(env: &BallEnv) {
 fn window_conf() -> Conf {
     Conf {
         window_title: "training".to_owned(),
-        window_width: SIZE.re() as i32,
-        window_height: SIZE.im() as i32,
+        fullscreen: true,
         platform: Platform {
             linux_backend: LinuxBackend::WaylandWithX11Fallback,
             ..Default::default()
@@ -156,8 +155,8 @@ fn window_conf() -> Conf {
 pub async fn main() {
     let device = CudaDevice::default();
 
-    let actor_config = ActorConfig::new(OBSERVATION, N_DIRECTIONS, 256);
-    let critic_config = CriticConfig::new(OBSERVATION, 256);
+    let actor_config = ActorConfig::new(OBSERVATION, N_DIRECTIONS, 512);
+    let critic_config = CriticConfig::new(OBSERVATION, 512);
 
     let mut actor: Actor<TrainingBackend> = actor_config.init(&device);
     let mut critic: Critic<TrainingBackend> = critic_config.init(&device);
@@ -166,8 +165,8 @@ pub async fn main() {
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut critic_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-2)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-3)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -180,15 +179,15 @@ pub async fn main() {
         let mut done = false;
 
         while !done {
-            let action = actor.forward(state.clone());
+            let logits = actor.forward(state.clone());
 
-            let action_idx = if rng().random::<f32>() < epsilon {
+            let action = if rng().random::<f32>() < epsilon {
                 rng().random_range(0..N_DIRECTIONS) as i32
             } else {
-                action.clone().argmax(1).into_scalar()
+                logits.clone().argmax(1).into_scalar()
             };
 
-            let (next_state, reward, is_done) = env.step(action_idx);
+            let (next_state, reward, is_done) = env.step(action);
             total_reward += reward;
             render(&env).await;
 
@@ -211,9 +210,8 @@ pub async fn main() {
             let grads_params = GradientsParams::from_grads(grads, &critic);
             critic = critic_optimizer.step(1e-4, critic, grads_params);
 
-            let logits = actor.forward(state.clone());
             let log_probs = log_softmax(logits, 1);
-            let log_prob = log_probs.gather(1, Tensor::from_data([[action_idx]], &device));
+            let log_prob = log_probs.gather(1, Tensor::from_data([[action]], &device));
 
             let actor_loss = -log_prob * advantage.detach();
 

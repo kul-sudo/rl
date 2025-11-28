@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 bincode = "2.0.1"
 biquad = "0.5.0"
-burn = { version = "0.20.0-pre.2", features = ["train", "autodiff", "dataset", "cuda", "ndarray"] }   
+burn = { version = "0.20.0-pre.2", features = ["autodiff", "cuda", "ndarray"] }   
 hound = "3.5.1"
 macroquad = "0.4.14"
 nalgebra = "0.34.1"
