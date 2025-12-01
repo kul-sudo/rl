@@ -9,9 +9,9 @@ use burn::{
 #[derive(Config, Debug)]
 pub struct ActorConfig {
     /// Number of factors the actor observes from the environment.
-    pub observation: usize,
+    pub obs_dim: usize,
     /// Number of decisions the actor can make at once.
-    pub actions: usize,
+    pub act_dim: usize,
     pub hidden: usize,
 }
 
@@ -19,9 +19,9 @@ impl ActorConfig {
     /// Initialize the Actor network from the config.
     pub fn init<B: Backend>(&self, device: &B::Device) -> Actor<B> {
         Actor {
-            fc1: LinearConfig::new(self.observation, self.hidden).init(device),
+            fc1: LinearConfig::new(self.obs_dim, self.hidden).init(device),
             fc2: LinearConfig::new(self.hidden, self.hidden).init(device),
-            fc3: LinearConfig::new(self.hidden, self.actions).init(device),
+            fc3: LinearConfig::new(self.hidden, self.act_dim).init(device),
         }
     }
 }
@@ -34,7 +34,7 @@ pub struct Actor<B: Backend> {
 }
 
 impl<B: Backend> Actor<B> {
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
         let x = relu(self.fc1.forward(x));
         let x = relu(self.fc2.forward(x));
 

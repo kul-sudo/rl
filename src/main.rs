@@ -1,147 +1,30 @@
+mod consts;
+mod env;
+mod inference;
 mod rl;
+mod training;
 
-use crate::rl::{
-    actor::{Actor, ActorConfig},
-    critic::{Critic, CriticConfig},
-};
-use ::rand::{Rng, rng};
+use crate::rl::actor::ActorConfig;
 use burn::{
     backend::{Autodiff, Cuda, cuda::CudaDevice},
-    grad_clipping::GradientClippingConfig,
-    module::Module,
-    nn::loss::{MseLoss, Reduction},
-    optim::{AdamWConfig, GradientsParams, Optimizer},
-    record::CompactRecorder,
-    tensor::{Tensor, activation::log_softmax, bf16},
+    tensor::bf16,
 };
+use consts::*;
+use env::BallEnv;
+use inference::*;
 use macroquad::prelude::*;
 use miniquad::conf::{LinuxBackend, Platform};
-// use nalgebra::{Point2, Vector2};
-use num_complex::{Complex32, ComplexFloat, c32};
-use parry2d::{
-    math::Isometry,
-    query::{
-        // Ray, RayCast,
-        contact,
-    },
-    shape::Ball,
-};
 use serde::Deserialize;
-use std::{env::var, f32::consts::PI, path::Path};
+use std::{env::var, sync::mpsc::channel, thread::spawn};
+use training::*;
 
 pub type TrainingBackend = Autodiff<Cuda<bf16>>;
-
-pub const OBSERVATION: usize = 4;
-pub const SIZE: Complex32 = Complex32::new(1920.0, 1080.0);
-pub const GAMMA: f32 = 0.9;
-pub const CONSUMED_REWARD: f32 = 5.0;
-pub const N_DIRECTIONS: usize = 80;
-
-pub const AGENT_RADIUS: f32 = 5.0;
-pub const TARGET_RADIUS: f32 = 5.0;
-pub const SPEED: f32 = 0.01;
-pub const EPSILON_MIN: f32 = 0.01;
-pub const EPSILON_DECAY: f32 = 0.995;
-pub const EPSILON_DEFAULT: f32 = 0.1;
-
-pub const ARTIFACT_DIR: &str = "artifact";
+pub type InferenceBackend = Cuda<bf16>;
 
 #[derive(Debug, Deserialize)]
 enum Mode {
     Training,
     Inference,
-}
-
-#[derive(Clone)]
-struct BallEnv {
-    body_pos: Complex32,
-    target_pos: Complex32,
-}
-
-impl BallEnv {
-    fn new() -> Self {
-        Self {
-            body_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
-            target_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
-        }
-    }
-
-    fn reset(&mut self) -> Tensor<TrainingBackend, 2> {
-        let init = Self::new();
-        self.target_pos = init.target_pos;
-        self.state_tensor()
-    }
-
-    fn state_tensor(&self) -> Tensor<TrainingBackend, 2> {
-        Tensor::from_floats(
-            [[
-                self.body_pos.im(),
-                self.body_pos.re(),
-                self.target_pos.im(),
-                self.target_pos.re(),
-            ]],
-            &CudaDevice::default(),
-        )
-    }
-
-    fn step(&mut self, action: i32) -> (Tensor<TrainingBackend, 2>, f32, bool) {
-        let prev_pos = self.body_pos;
-        let prev_distance = (prev_pos - self.target_pos).abs();
-
-        let action_idx = action as usize % N_DIRECTIONS;
-        let angle = 2.0 * PI * (action_idx as f32) / N_DIRECTIONS as f32;
-
-        self.body_pos.re += SPEED * angle.cos();
-        self.body_pos.im += SPEED * angle.sin();
-
-        self.body_pos.re = self.body_pos.re().clamp(0.0, 1.0);
-        self.body_pos.im = self.body_pos.im().clamp(0.0, 1.0);
-
-        let new_distance = (self.body_pos - self.target_pos).abs();
-        let distance_improvement = (prev_distance - new_distance) * CONSUMED_REWARD;
-
-        let hit = self.hits();
-        let reward = if hit {
-            CONSUMED_REWARD
-        } else {
-            distance_improvement
-        };
-
-        (self.state_tensor(), reward, hit)
-    }
-
-    fn hits(&self) -> bool {
-        let agent_ball = Ball::new(AGENT_RADIUS / SIZE.re);
-        let target_ball = Ball::new(TARGET_RADIUS / SIZE.re);
-        //
-        let agent_pos = Isometry::translation(self.body_pos.re(), self.body_pos.im());
-        let target_pos = Isometry::translation(self.target_pos.re(), self.target_pos.im());
-        //
-        // let ray_dir = Vector2::new(
-        //     self.body_pos.re() - prev_pos.re(),
-        //     self.body_pos.im() - prev_pos.im(),
-        // );
-        // let ray = Ray::new(Point2::new(prev_pos.re(), prev_pos.im()), ray_dir);
-        //
-        // if target_ball.cast_ray(&target_pos, &ray, 1.0, true).is_some() {
-        //     return true;
-        // }
-        //
-        contact(&agent_pos, &agent_ball, &target_pos, &target_ball, 0.0)
-            .map(|c| c.is_some())
-            .unwrap_or(false)
-    }
-}
-
-async fn render(env: &BallEnv) {
-    clear_background(WHITE);
-    let to_screen = |pos: Complex32| vec2(SIZE.re() * pos.re(), SIZE.im() * pos.im());
-
-    let p = to_screen(env.body_pos);
-    let t = to_screen(env.target_pos);
-
-    draw_circle(p.x, p.y, AGENT_RADIUS, BLUE);
-    draw_circle(t.x, t.y, TARGET_RADIUS, GREEN);
 }
 
 fn window_conf() -> Conf {
@@ -156,12 +39,10 @@ fn window_conf() -> Conf {
     }
 }
 
-use std::sync::mpsc::channel;
-use std::thread::spawn;
-
 #[macroquad::main(window_conf)]
 pub async fn main() {
-    let (sender, receiver) = channel();
+    let (env_tx, env_rx) = channel();
+    let (epsilon_tx, epsilon_rx) = channel();
 
     let mode = match var("MODE").unwrap().as_str() {
         "inference" => Mode::Inference,
@@ -171,132 +52,54 @@ pub async fn main() {
 
     spawn(move || {
         let device = CudaDevice::default();
+        let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
+        let env = BallEnv::new();
 
-        let actor_config = ActorConfig::new(OBSERVATION, N_DIRECTIONS, 512);
-        let critic_config = CriticConfig::new(OBSERVATION, 512);
-        let mut actor: Actor<TrainingBackend> = actor_config.init(&device);
-        let mut critic: Critic<TrainingBackend> = critic_config.init(&device);
-
-        if let Mode::Inference = mode {
-            actor = actor
-                .load_file(
-                    Path::new(ARTIFACT_DIR).join("actor"),
-                    &CompactRecorder::new(),
-                    &device,
-                )
-                .unwrap();
-            critic = critic
-                .load_file(
-                    Path::new(ARTIFACT_DIR).join("critic"),
-                    &CompactRecorder::new(),
-                    &device,
-                )
-                .unwrap();
-        }
-
-        let mut actor_optimizer = AdamWConfig::new()
-            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
-            .init();
-        let mut critic_optimizer = AdamWConfig::new()
-            .with_cautious_weight_decay(true)
-            .with_weight_decay(1e-3)
-            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
-            .init();
-
-        let mut env = BallEnv::new();
-        let mut state = env.reset();
-        let mut epsilon = EPSILON_DEFAULT;
-
-        loop {
-            let mut done = false;
-
-            while !done {
-                match mode {
-                    Mode::Inference => {
-                        let logits = actor.forward(state.clone());
-                        let action = logits.argmax(1).into_scalar();
-
-                        let (next_state, _, is_done) = env.step(action);
-                        sender.send(env.clone()).unwrap();
-
-                        state = if is_done { env.reset() } else { next_state };
-                        done = is_done;
-                    }
-                    Mode::Training => {
-                        let logits = actor.forward(state.clone());
-
-                        let action = if rng().random::<f32>() < epsilon {
-                            rng().random_range(0..N_DIRECTIONS) as i32
-                        } else {
-                            logits.clone().argmax(1).into_scalar()
-                        };
-
-                        let (next_state, reward, is_done) = env.step(action);
-                        sender.send(env.clone()).unwrap();
-
-                        dbg!(env.body_pos);
-
-                        let reward_tensor = Tensor::from_floats([[reward]], &device);
-
-                        let value = critic.forward(state.clone());
-                        let next_value = if is_done {
-                            Tensor::zeros([1, 1], &device)
-                        } else {
-                            critic.forward(next_state.clone())
-                        };
-
-                        let td_target: Tensor<TrainingBackend, 2> =
-                            reward_tensor + GAMMA * next_value;
-                        let advantage = td_target.clone() - value.clone();
-
-                        let mse_loss = MseLoss::new();
-                        let critic_loss =
-                            mse_loss.forward(value, td_target.detach(), Reduction::Mean);
-
-                        let grads = critic_loss.backward();
-                        let grads_params = GradientsParams::from_grads(grads, &critic);
-                        critic = critic_optimizer.step(1e-4, critic, grads_params);
-
-                        let log_probs = log_softmax(logits, 1);
-                        let log_prob = log_probs.gather(1, Tensor::from_data([[action]], &device));
-
-                        let actor_loss = -log_prob * advantage.detach();
-
-                        let grads = actor_loss.backward();
-                        let grads_params = GradientsParams::from_grads(grads, &actor);
-                        actor = actor_optimizer.step(1e-4, actor, grads_params);
-
-                        state = if is_done { env.reset() } else { next_state };
-                        done = is_done;
-                    }
-                }
+        match mode {
+            Mode::Inference => {
+                inference::<InferenceBackend, BallEnv, 2>(&actor_config, env, &env_tx, &device);
             }
-
-            epsilon = (epsilon * EPSILON_DECAY).max(EPSILON_MIN);
-
-            if let Mode::Training = mode {
-                actor
-                    .clone()
-                    .save_file(
-                        Path::new(ARTIFACT_DIR).join("actor"),
-                        &CompactRecorder::new(),
-                    )
-                    .unwrap();
-                critic
-                    .clone()
-                    .save_file(
-                        Path::new(ARTIFACT_DIR).join("critic"),
-                        &CompactRecorder::new(),
-                    )
-                    .unwrap()
+            Mode::Training => {
+                let mut epsilon = EPSILON_DEFAULT;
+                training::<TrainingBackend, BallEnv, 2>(
+                    &actor_config,
+                    env,
+                    &env_tx,
+                    &epsilon_tx,
+                    &mut epsilon,
+                    &device,
+                );
             }
         }
     });
 
     loop {
-        if let Ok(env) = receiver.recv() {
-            render(&env).await;
-            next_frame().await;
+        clear_background(WHITE);
+
+        let mut latest_env = None;
+        while let Ok(env) = env_rx.try_recv() {
+            latest_env = Some(env);
         }
+        if let Some(ref env) = latest_env {
+            env.render();
+        }
+
+        let mut latest_epsilon = None;
+        while let Ok(epsilon) = epsilon_rx.try_recv() {
+            latest_epsilon = Some(epsilon);
+        }
+        if let Some(ref epsilon) = latest_epsilon {
+            let text = format!(
+                "Exploration = {:.2} Life = {:?}",
+                epsilon,
+                latest_env.map(|x| x.life)
+            );
+            let size = measure_text(&text, None, FONT_SIZE, 1.0);
+            draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
+        }
+
+        // if latest_env.is_some() || latest_epsilon.is_some() {
+        next_frame().await;
+        // }
     }
 }
