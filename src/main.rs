@@ -3,16 +3,22 @@ mod env;
 mod inference;
 mod rl;
 mod training;
+mod utils;
 
 use crate::rl::actor::ActorConfig;
+use crate::utils::Data;
 use burn::backend::{Autodiff, Cuda, cuda::CudaDevice};
 use consts::*;
-use env::BallEnv;
+use env::{BallEnv, Env};
 use inference::*;
 use macroquad::prelude::*;
 use miniquad::conf::{LinuxBackend, Platform};
 use serde::Deserialize;
-use std::{env::var, sync::mpsc::channel, thread::spawn};
+use std::{
+    env::var,
+    sync::mpsc::{channel, sync_channel},
+    thread::spawn,
+};
 use training::*;
 
 pub type TrainingBackend = Autodiff<Cuda<f32>>;
@@ -38,8 +44,8 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 pub async fn main() {
-    let (env_tx, env_rx) = channel();
-    let (epsilon_tx, epsilon_rx) = channel();
+    let (data_tx, data_rx) = channel();
+    let (data_tx_sync, data_rx_sync) = sync_channel::<Data<InferenceBackend, BallEnv>>(300);
 
     let mode = match var("MODE").unwrap().as_str() {
         "inference" => Mode::Inference,
@@ -56,7 +62,7 @@ pub async fn main() {
 
         match mode_clone {
             Mode::Inference => {
-                inference::<InferenceBackend, BallEnv>(&actor_config, env, &env_tx, &device);
+                inference::<InferenceBackend, BallEnv>(&actor_config, env, &data_tx_sync, &device);
             }
             Mode::Training => {
                 let mut epsilon = EPSILON_DEFAULT;
@@ -64,8 +70,7 @@ pub async fn main() {
                 training::<TrainingBackend, BallEnv>(
                     &actor_config,
                     env,
-                    &env_tx,
-                    &epsilon_tx,
+                    &data_tx,
                     &mut epsilon,
                     &device,
                 );
@@ -73,40 +78,35 @@ pub async fn main() {
         }
     });
 
+    let mut latest_data = None;
+
     loop {
         clear_background(WHITE);
 
         match mode {
             Mode::Inference => {
-                if let Ok(ref env) = env_rx.try_recv() {
-                    env.render();
+                if let Ok(ref data) = data_rx_sync.try_recv() {
+                    data.env.render();
                 }
             }
             Mode::Training => {
-                let mut latest_env = None;
-                while let Ok(env) = env_rx.try_recv() {
-                    latest_env = Some(env);
+                while let Ok(data) = data_rx.try_recv() {
+                    latest_data = Some(data);
                 }
-                if let Some(ref env) = latest_env {
-                    env.render();
-                }
+                if let Some(ref data) = latest_data {
+                    data.env.render();
 
-                let mut latest_epsilon = None;
-                while let Ok(epsilon) = epsilon_rx.try_recv() {
-                    latest_epsilon = Some(epsilon);
-                }
-                if let Some(ref epsilon) = latest_epsilon {
                     let text = format!(
                         "Exploration = {:.2} Time = {:?}",
-                        epsilon,
-                        latest_env.map(|x| x.time)
+                        data.epsilon.unwrap(),
+                        data.env.time
                     );
                     let size = measure_text(&text, None, FONT_SIZE, 1.0);
                     draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
                 }
-
-                next_frame().await;
             }
         }
+
+        next_frame().await;
     }
 }

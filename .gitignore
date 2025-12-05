@@ -1,7 +1,2 @@
 /target
-/input
-/test
-cache.bin
-experiment.log
-valid/
-train/
+artifact/

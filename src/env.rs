@@ -8,12 +8,9 @@ use burn::{
 use macroquad::prelude::*;
 use num_complex::{Complex32, ComplexFloat, c32};
 use parry2d::{math::Isometry, query::contact, shape::Ball};
-use std::{
-    f32::consts::PI,
-    sync::{LazyLock, RwLock},
-};
+use std::f32::consts::PI;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Step<B: Backend> {
     pub next_state: Tensor<B, 2>,
     pub reward: f32,
@@ -37,6 +34,8 @@ pub trait Env<B: Backend> {
 
     fn state_tensor(&self, device: &B::Device) -> Tensor<B, 2>;
 }
+
+const REWARD_FACTOR: f32 = 1000.0;
 
 #[derive(Clone, Debug)]
 pub struct BallEnv {
@@ -66,7 +65,14 @@ impl<B: Backend> Env<B> for BallEnv {
             device,
         );
 
-        let noise = GaussianNoiseConfig::new(0.2).init();
+        let dist = (self.target_pos - self.body_pos).abs();
+        let sigma = 0.4 * dist.powi(2);
+
+        if B::ad_enabled() {
+            println!("Noise: {}", sigma);
+        }
+
+        let noise = GaussianNoiseConfig::new(sigma as f64).init();
         noise.forward(tensor)
     }
 
@@ -99,8 +105,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 let new_distance = (self.body_pos - self.target_pos).abs();
                 let distance_improvement = prev_distance - new_distance;
 
-                let mut raw = distance_improvement * 5.0;
-
+                let mut raw = distance_improvement * REWARD_FACTOR;
                 if B::ad_enabled() {
                     println!("Pure: {}", raw);
                 }
@@ -111,6 +116,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 if B::ad_enabled() {
                     println!("Time penalty: {}", raw);
                 }
+
                 (raw, false, self.time + 1)
             };
 
@@ -122,10 +128,6 @@ impl<B: Backend> Env<B> for BallEnv {
             //     distance_improvement * REWARD_CONSUMED,
             //     (self.time as f32 / TIME_CAP as f32) * 1.5
             // );
-        }
-
-        if done {
-            println!("Done: {}", reward);
         }
 
         Step::new(self.state_tensor(device), reward, done)
@@ -142,10 +144,18 @@ impl BallEnv {
     }
 
     pub fn hits(&self) -> bool {
-        let agent_ball = Ball::new(AGENT_RADIUS / SIZE.re());
-        let target_ball = Ball::new(TARGET_RADIUS / SIZE.re());
-        let agent_pos = Isometry::translation(self.body_pos.re(), self.body_pos.im());
-        let target_pos = Isometry::translation(self.target_pos.re(), self.target_pos.im());
+        let agent_pos = Isometry::translation(
+            self.body_pos.re() * SIZE.re(),
+            self.body_pos.im() * SIZE.im(),
+        );
+        let target_pos = Isometry::translation(
+            self.target_pos.re() * SIZE.re(),
+            self.target_pos.im() * SIZE.im(),
+        );
+
+        let agent_ball = Ball::new(AGENT_RADIUS);
+        let target_ball = Ball::new(TARGET_RADIUS);
+
         contact(&agent_pos, &agent_ball, &target_pos, &target_ball, 0.0)
             .map(|c| c.is_some())
             .unwrap_or(false)

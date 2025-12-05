@@ -4,6 +4,7 @@ use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
 };
+use crate::utils::Data;
 use ::rand::{Rng, rng};
 use burn::{
     grad_clipping::GradientClippingConfig,
@@ -17,11 +18,10 @@ use burn::{
 use macroquad::prelude::*;
 use std::{path::Path, sync::mpsc::Sender};
 
-pub fn training<B: AutodiffBackend, E: Env<B> + Clone + std::fmt::Debug>(
+pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     actor_config: &ActorConfig,
     mut env: E,
-    env_tx: &Sender<E>,
-    epsilon_tx: &Sender<f32>,
+    data_tx: &Sender<Data<B, E>>,
     epsilon: &mut f32,
     device: &B::Device,
 ) {
@@ -35,7 +35,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone + std::fmt::Debug>(
 
     let mut critic_optimizer = AdamWConfig::new()
         .with_cautious_weight_decay(true)
-        .with_weight_decay(1e-3)
+        .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -55,7 +55,12 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone + std::fmt::Debug>(
             };
 
             let step = env.step(action, device);
-            let _ = env_tx.send(env.clone());
+
+            let _ = data_tx.send(Data {
+                env: env.clone(),
+                step: step.clone(),
+                epsilon: Some(*epsilon),
+            });
 
             let reward_tensor = Tensor::from_floats([[step.reward]], device);
             let value = critic.forward(state.clone());
@@ -86,7 +91,6 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone + std::fmt::Debug>(
             actor = actor_optimizer.step(1e-4, actor, grads_params);
 
             *epsilon = (*epsilon * EPSILON_DECAY).max(EPSILON_MIN);
-            let _ = epsilon_tx.send(*epsilon);
 
             if step.done {
                 break;
