@@ -8,15 +8,16 @@ use ::rand::{Rng, rng};
 use burn::{
     grad_clipping::GradientClippingConfig,
     module::Module,
-    nn::loss::{MseLoss, Reduction},
+    nn::loss::{CrossEntropyLossConfig, MseLoss, Reduction},
     optim::{AdamWConfig, GradientsParams, Optimizer},
+    prelude::ToElement,
     record::CompactRecorder,
-    tensor::{ElementConversion, Tensor, activation::log_softmax, backend::AutodiffBackend},
+    tensor::{ElementConversion, Tensor, backend::AutodiffBackend},
 };
 use macroquad::prelude::*;
 use std::{path::Path, sync::mpsc::Sender};
 
-pub fn training<B: AutodiffBackend, E: Env<B, D> + Clone, const D: usize>(
+pub fn training<B: AutodiffBackend, E: Env<B> + Clone + std::fmt::Debug>(
     actor_config: &ActorConfig,
     mut env: E,
     env_tx: &Sender<E>,
@@ -43,6 +44,9 @@ pub fn training<B: AutodiffBackend, E: Env<B, D> + Clone, const D: usize>(
 
         loop {
             let logits = actor.forward(state.clone());
+            if logits.clone().contains_nan().into_scalar().to_bool() {
+                panic!("NaN contained")
+            }
 
             let action = if rng().random::<f32>() < *epsilon {
                 (rng().random_range(0..N_DIRECTIONS)).elem::<B::IntElem>()
@@ -50,18 +54,20 @@ pub fn training<B: AutodiffBackend, E: Env<B, D> + Clone, const D: usize>(
                 logits.clone().argmax(1).into_scalar()
             };
 
-            let step = env.step(action, &device);
+            let step = env.step(action, device);
             let _ = env_tx.send(env.clone());
 
             let reward_tensor = Tensor::from_floats([[step.reward]], device);
             let value = critic.forward(state.clone());
+
             let next_value = if step.done {
                 Tensor::zeros([1, 1], device)
             } else {
                 critic.forward(step.next_state.clone())
             };
 
-            let td_target: Tensor<B, D> = reward_tensor + GAMMA * next_value;
+            let td_target: Tensor<B, 2> = reward_tensor + GAMMA * next_value;
+
             let advantage = td_target.clone() - value.clone();
 
             let mse_loss = MseLoss::new();
@@ -71,10 +77,9 @@ pub fn training<B: AutodiffBackend, E: Env<B, D> + Clone, const D: usize>(
             let grads_params = GradientsParams::from_grads(grads, &critic);
             critic = critic_optimizer.step(1e-4, critic, grads_params);
 
-            let log_probs = log_softmax(logits, 1);
-            let log_prob = log_probs.gather(1, Tensor::from_data([[action]], device));
-
-            let actor_loss = -log_prob * advantage.detach();
+            let loss_fn = CrossEntropyLossConfig::new().init(device);
+            let log_prob = -loss_fn.forward(logits, Tensor::from_data([action], device));
+            let actor_loss = -log_prob * advantage.squeeze_dim(1).detach();
 
             let grads = actor_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, &actor);

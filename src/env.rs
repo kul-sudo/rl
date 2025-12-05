@@ -1,22 +1,27 @@
 use crate::consts::*;
 use ::rand::{Rng, rng};
 use burn::{
+    nn::GaussianNoiseConfig,
     prelude::ToElement,
     tensor::{Tensor, backend::Backend},
 };
 use macroquad::prelude::*;
 use num_complex::{Complex32, ComplexFloat, c32};
 use parry2d::{math::Isometry, query::contact, shape::Ball};
-use std::f32::consts::PI;
+use std::{
+    f32::consts::PI,
+    sync::{LazyLock, RwLock},
+};
 
-pub struct Step<B: Backend, const D: usize> {
-    pub next_state: Tensor<B, D>,
+#[derive(Debug)]
+pub struct Step<B: Backend> {
+    pub next_state: Tensor<B, 2>,
     pub reward: f32,
     pub done: bool,
 }
 
-impl<B: Backend, const D: usize> Step<B, D> {
-    fn new(next_state: Tensor<B, D>, reward: f32, done: bool) -> Self {
+impl<B: Backend> Step<B> {
+    fn new(next_state: Tensor<B, 2>, reward: f32, done: bool) -> Self {
         Self {
             next_state,
             reward,
@@ -25,49 +30,57 @@ impl<B: Backend, const D: usize> Step<B, D> {
     }
 }
 
-pub trait Env<B: Backend, const D: usize> {
-    fn reset(&mut self, device: &B::Device) -> Tensor<B, D>;
+pub trait Env<B: Backend> {
+    fn reset(&mut self, device: &B::Device) -> Tensor<B, 2>;
 
-    fn step(&mut self, action: B::IntElem, device: &B::Device) -> Step<B, D>;
+    fn step(&mut self, action: B::IntElem, device: &B::Device) -> Step<B>;
 
-    fn state_tensor(&self, device: &B::Device) -> Tensor<B, D>;
+    fn state_tensor(&self, device: &B::Device) -> Tensor<B, 2>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BallEnv {
     pub body_pos: Complex32,
     pub target_pos: Complex32,
-    pub life: u32,
+    pub time: u32,
 }
 
-impl<B: Backend, const D: usize> Env<B, D> for BallEnv {
-    fn reset(&mut self, device: &B::Device) -> Tensor<B, D> {
+impl<B: Backend> Env<B> for BallEnv {
+    fn reset(&mut self, device: &B::Device) -> Tensor<B, 2> {
         let init = Self::new();
-        *self = init;
+        *self = Self {
+            body_pos: self.body_pos,
+            ..init
+        };
         self.state_tensor(device)
     }
 
-    fn state_tensor(&self, device: &B::Device) -> Tensor<B, D> {
-        Tensor::from_floats(
+    fn state_tensor(&self, device: &B::Device) -> Tensor<B, 2> {
+        let tensor = Tensor::from_floats(
             [[
-                self.body_pos.im(),
                 self.body_pos.re(),
-                self.target_pos.im(),
-                self.target_pos.re(),
-                self.life as f32 / LIFE_LENGTH as f32,
+                self.body_pos.im(),
+                self.target_pos.re() - self.body_pos.re(),
+                self.target_pos.im() - self.body_pos.im(),
             ]],
             device,
-        )
+        );
+
+        let noise = GaussianNoiseConfig::new(0.2).init();
+        noise.forward(tensor)
     }
 
-    fn step(&mut self, action: B::IntElem, device: &B::Device) -> Step<B, D> {
+    fn step(&mut self, action: B::IntElem, device: &B::Device) -> Step<B> {
         let reward;
         let done;
 
-        if self.life == LIFE_LENGTH {
-            (reward, done) = (f32::MIN, true);
+        if self.time == TIME_CAP {
+            (reward, done) = (-20.0, true);
         } else {
             let prev_distance = (self.body_pos - self.target_pos).abs();
+            if prev_distance.is_nan() {
+                panic!("Distance is NaN")
+            }
 
             let action_idx = action.to_u32() % N_DIRECTIONS;
             let angle = 2.0 * PI * (action_idx as f32) / N_DIRECTIONS as f32;
@@ -80,31 +93,40 @@ impl<B: Backend, const D: usize> Env<B, D> for BallEnv {
 
             let collision = self.hits();
 
-            (reward, done, self.life) = if collision {
-                (REWARD_CONSUMED, true, 0)
+            (reward, done, self.time) = if collision {
+                (20.0, true, 0)
             } else {
                 let new_distance = (self.body_pos - self.target_pos).abs();
                 let distance_improvement = prev_distance - new_distance;
-                (
-                    distance_improvement * REWARD_CONSUMED - self.life as f32 * 0.002,
-                    false,
-                    self.life + 1,
-                )
-            };
-            let new_distance = (self.body_pos - self.target_pos).abs();
-            let distance_improvement = prev_distance - new_distance;
 
-            dbg!(
-                distance_improvement * REWARD_CONSUMED,
-                self.life as f32 * 0.002
-            );
+                let mut raw = distance_improvement * 5.0;
+
+                if B::ad_enabled() {
+                    println!("Pure: {}", raw);
+                }
+
+                let time_penalty = raw.abs() * (self.time as f32 / TIME_CAP as f32).powf(1.0 / 3.0);
+                raw -= time_penalty;
+
+                if B::ad_enabled() {
+                    println!("Time penalty: {}", raw);
+                }
+                (raw, false, self.time + 1)
+            };
+
+            // dbg!(reward);
+
+            // let new_distance = (self.body_pos - self.target_pos).abs();
+            // let distance_improvement = prev_distance - new_distance;
+            // dbg!(
+            //     distance_improvement * REWARD_CONSUMED,
+            //     (self.time as f32 / TIME_CAP as f32) * 1.5
+            // );
         }
 
-        // self.energy -= ENERGY_LIFE + REWARD_CONSUMED * self.hits() as u8 as f32;
-        //
-        // let new_distance = (self.body_pos - self.target_pos).abs();
-        // let distance_improvement = prev_distance - new_distance;
-        // let reward = self.energy - prev_energy + distance_improvement * DISTANCE_IMPROVEMENT_FACTOR;
+        if done {
+            println!("Done: {}", reward);
+        }
 
         Step::new(self.state_tensor(device), reward, done)
     }
@@ -115,7 +137,7 @@ impl BallEnv {
         Self {
             body_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
             target_pos: c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0)),
-            life: 0,
+            time: 0,
         }
     }
 

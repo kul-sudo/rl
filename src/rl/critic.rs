@@ -30,7 +30,7 @@ pub struct Critic<B: Backend> {
 }
 
 impl<B: Backend> Critic<B> {
-    pub fn forward<const D: usize>(&self, state: Tensor<B, D>) -> Tensor<B, D> {
+    pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = relu(self.fc1.forward(state));
         let x = relu(self.fc2.forward(x));
         self.fc3.forward(x)

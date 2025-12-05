@@ -34,7 +34,7 @@ pub struct Actor<B: Backend> {
 }
 
 impl<B: Backend> Actor<B> {
-    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = relu(self.fc1.forward(x));
         let x = relu(self.fc2.forward(x));
 

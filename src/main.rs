@@ -5,10 +5,7 @@ mod rl;
 mod training;
 
 use crate::rl::actor::ActorConfig;
-use burn::{
-    backend::{Autodiff, Cuda, cuda::CudaDevice},
-    tensor::bf16,
-};
+use burn::backend::{Autodiff, Cuda, cuda::CudaDevice};
 use consts::*;
 use env::BallEnv;
 use inference::*;
@@ -18,10 +15,10 @@ use serde::Deserialize;
 use std::{env::var, sync::mpsc::channel, thread::spawn};
 use training::*;
 
-pub type TrainingBackend = Autodiff<Cuda<bf16>>;
-pub type InferenceBackend = Cuda<bf16>;
+pub type TrainingBackend = Autodiff<Cuda<f32>>;
+pub type InferenceBackend = Cuda<f32>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 enum Mode {
     Training,
     Inference,
@@ -50,18 +47,21 @@ pub async fn main() {
         _ => panic!("Unexpected mode"),
     };
 
+    let mode_clone = mode.clone();
+
     spawn(move || {
         let device = CudaDevice::default();
         let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
         let env = BallEnv::new();
 
-        match mode {
+        match mode_clone {
             Mode::Inference => {
-                inference::<InferenceBackend, BallEnv, 2>(&actor_config, env, &env_tx, &device);
+                inference::<InferenceBackend, BallEnv>(&actor_config, env, &env_tx, &device);
             }
             Mode::Training => {
                 let mut epsilon = EPSILON_DEFAULT;
-                training::<TrainingBackend, BallEnv, 2>(
+
+                training::<TrainingBackend, BallEnv>(
                     &actor_config,
                     env,
                     &env_tx,
@@ -76,30 +76,37 @@ pub async fn main() {
     loop {
         clear_background(WHITE);
 
-        let mut latest_env = None;
-        while let Ok(env) = env_rx.try_recv() {
-            latest_env = Some(env);
-        }
-        if let Some(ref env) = latest_env {
-            env.render();
-        }
+        match mode {
+            Mode::Inference => {
+                if let Ok(ref env) = env_rx.try_recv() {
+                    env.render();
+                }
+            }
+            Mode::Training => {
+                let mut latest_env = None;
+                while let Ok(env) = env_rx.try_recv() {
+                    latest_env = Some(env);
+                }
+                if let Some(ref env) = latest_env {
+                    env.render();
+                }
 
-        let mut latest_epsilon = None;
-        while let Ok(epsilon) = epsilon_rx.try_recv() {
-            latest_epsilon = Some(epsilon);
-        }
-        if let Some(ref epsilon) = latest_epsilon {
-            let text = format!(
-                "Exploration = {:.2} Life = {:?}",
-                epsilon,
-                latest_env.map(|x| x.life)
-            );
-            let size = measure_text(&text, None, FONT_SIZE, 1.0);
-            draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
-        }
+                let mut latest_epsilon = None;
+                while let Ok(epsilon) = epsilon_rx.try_recv() {
+                    latest_epsilon = Some(epsilon);
+                }
+                if let Some(ref epsilon) = latest_epsilon {
+                    let text = format!(
+                        "Exploration = {:.2} Time = {:?}",
+                        epsilon,
+                        latest_env.map(|x| x.time)
+                    );
+                    let size = measure_text(&text, None, FONT_SIZE, 1.0);
+                    draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
+                }
 
-        // if latest_env.is_some() || latest_epsilon.is_some() {
-        next_frame().await;
-        // }
+                next_frame().await;
+            }
+        }
     }
 }
