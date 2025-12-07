@@ -30,7 +30,7 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
         let mut state = env.reset(device);
 
         loop {
-            let logits = actor.forward(state.clone()) / 0.1;
+            let logits = actor.forward(state.clone()) / 0.5;
             let action_probs: Tensor<B, 2> = softmax(logits, 1);
 
             let cumulative_probs = action_probs.cumsum(1);

@@ -110,7 +110,7 @@ impl<B: Backend> Env<B> for BallEnv {
                     println!("Pure: {}", raw);
                 }
 
-                let time_penalty = raw.abs() * (self.time as f32 / TIME_CAP as f32).powf(1.0 / 3.0);
+                let time_penalty = raw.abs() * (self.time as f32 / TIME_CAP as f32).sqrt();
                 raw -= time_penalty;
 
                 if B::ad_enabled() {
@@ -119,15 +119,6 @@ impl<B: Backend> Env<B> for BallEnv {
 
                 (raw, false, self.time + 1)
             };
-
-            // dbg!(reward);
-
-            // let new_distance = (self.body_pos - self.target_pos).abs();
-            // let distance_improvement = prev_distance - new_distance;
-            // dbg!(
-            //     distance_improvement * REWARD_CONSUMED,
-            //     (self.time as f32 / TIME_CAP as f32) * 1.5
-            // );
         }
 
         Step::new(self.state_tensor(device), reward, done)
