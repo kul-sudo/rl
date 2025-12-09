@@ -5,17 +5,16 @@ use crate::utils::Data;
 use burn::{
     module::Module,
     record::CompactRecorder,
-    tensor::{ElementConversion, Tensor, activation::softmax, backend::Backend},
+    tensor::{Distribution, Tensor, backend::Backend},
 };
-use rand::{Rng, rng};
 use std::{path::Path, sync::mpsc::SyncSender};
 
 pub fn inference<B: Backend, E: Env<B> + Clone>(
-    actor_config: &ActorConfig,
     mut env: E,
     data_tx: &SyncSender<Data<B, E>>,
     device: &B::Device,
 ) {
+    let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
     let mut actor: Actor<B> = actor_config.init(device);
 
     actor = actor
@@ -30,19 +29,12 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
         let mut state = env.reset(device);
 
         loop {
-            let logits = actor.forward(state.clone()) / 0.5;
-            let action_probs: Tensor<B, 2> = softmax(logits, 1);
+            let logits = actor.forward(state.clone()) / 2.0;
 
-            let cumulative_probs = action_probs.cumsum(1);
-            let r: f32 = rng().random_range(0.0..=1.0);
-            let selected = cumulative_probs
-                .into_data()
-                .as_slice()
-                .unwrap()
-                .iter()
-                .position(|&p: &f32| p >= r)
-                .unwrap_or(0) as u32;
-            let action = selected.elem::<B::IntElem>();
+            let eps = 1e-8;
+            let uniform = Tensor::random_like(&logits, Distribution::Uniform(eps, 1.0 - eps));
+            let gumbel = -(-uniform.log()).log();
+            let action = (logits + gumbel).argmax(1).into_scalar();
 
             let step = env.step(action, device);
             let _ = data_tx.send(Data {

@@ -5,7 +5,6 @@ mod rl;
 mod training;
 mod utils;
 
-use crate::rl::actor::ActorConfig;
 use crate::utils::Data;
 use burn::backend::{Autodiff, Cuda, cuda::CudaDevice};
 use consts::*;
@@ -57,23 +56,16 @@ pub async fn main() {
 
     spawn(move || {
         let device = CudaDevice::default();
-        let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
         let env = BallEnv::new();
 
         match mode_clone {
             Mode::Inference => {
-                inference::<InferenceBackend, BallEnv>(&actor_config, env, &data_tx_sync, &device);
+                inference::<InferenceBackend, BallEnv>(env, &data_tx_sync, &device);
             }
             Mode::Training => {
                 let mut epsilon = EPSILON_DEFAULT;
 
-                training::<TrainingBackend, BallEnv>(
-                    &actor_config,
-                    env,
-                    &data_tx,
-                    &mut epsilon,
-                    &device,
-                );
+                training::<TrainingBackend, BallEnv>(env, &data_tx, &mut epsilon, &device);
             }
         }
     });

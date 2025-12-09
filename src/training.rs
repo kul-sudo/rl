@@ -19,12 +19,12 @@ use macroquad::prelude::*;
 use std::{path::Path, sync::mpsc::Sender};
 
 pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
-    actor_config: &ActorConfig,
     mut env: E,
     data_tx: &Sender<Data<B, E>>,
     epsilon: &mut f32,
     device: &B::Device,
 ) {
+    let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
     let mut actor_optimizer = AdamWConfig::new()
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
