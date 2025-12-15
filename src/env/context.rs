@@ -9,10 +9,11 @@ use burn::{
 use macroquad::prelude::*;
 use num_complex::{Complex32, ComplexFloat, c32};
 use parry2d::{
-    math::Isometry,
-    query::{contact, intersection_test},
+    math::{Isometry, Point, Vector},
+    query::{Ray, RayCast, contact, intersection_test},
     shape::{Ball, Compound, SharedShape},
 };
+use rand_distr::Normal;
 use std::f32::consts::PI;
 
 pub trait Env<B: Backend> {
@@ -32,13 +33,13 @@ pub enum Perspective {
 }
 
 fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
-    let prev = pos.clone();
+    let prev = *pos;
     pos.re += speed * angle.cos();
     pos.im += speed * angle.sin();
     pos.re = pos.re().clamp(0.0, 1.0);
     pos.im = pos.im().clamp(0.0, 1.0);
 
-    if pos_invalid(&pos, SharedShape::ball(RADIUS)) {
+    if pos_invalid(pos, SharedShape::ball(RADIUS)) {
         *pos = prev;
     }
 }
@@ -66,32 +67,47 @@ impl<B: Backend> Env<B> for BallEnv {
     }
 
     fn state_tensor(&self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
-        Tensor::from_floats(
-            [match perspective {
-                Perspective::Pursuer => [
-                    self.pursuer.pos.re(),
-                    self.pursuer.pos.im(),
-                    self.target.pos.re() - self.pursuer.pos.re(),
-                    self.target.pos.im() - self.pursuer.pos.im(),
-                ],
-                Perspective::Target => [
-                    self.target.pos.re(),
-                    self.target.pos.im(),
-                    self.pursuer.pos.re() - self.target.pos.re(),
-                    self.pursuer.pos.im() - self.target.pos.im(),
-                ],
-            }],
-            device,
-        )
-        // let dist = (self.pursuer.pos - self.target.pos).abs();
-        // let sigma = 0.4 * dist.powi(2);
-        //
-        // if B::ad_enabled() {
-        //     println!("Noise: {}", sigma);
-        // }
-        //
-        // let noise = GaussianNoiseConfig::new(sigma as f64).init();
-        // noise.forward(tensor)
+        let input = match perspective {
+            Perspective::Pursuer => {
+                // Take into account that a wall might be in the way of a connecting ray
+                let direction = self.target.pos - self.pursuer.pos;
+                let distance_norm = (direction * SIZE).abs();
+                let ray_origin = Point::new(
+                    self.pursuer.pos.re() * SIZE.re(),
+                    self.pursuer.pos.im() * SIZE.im(),
+                );
+                let ray_direction = Vector::new(direction.re(), direction.im()).normalize();
+                let ray = Ray::new(ray_origin, ray_direction);
+                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, f32::MAX, false);
+                let wall_covers = wall_hit.is_some_and(|hit| hit < distance_norm);
+
+                if wall_covers {
+                    dbg!(1);
+                    let distr = Normal::new(0.0, 0.4).unwrap();
+                    [
+                        self.pursuer.pos.re(),
+                        self.pursuer.pos.im(),
+                        self.target.pos.re() - self.pursuer.pos.re() + rng().sample(distr),
+                        self.target.pos.im() - self.pursuer.pos.im() + rng().sample(distr),
+                    ]
+                } else {
+                    [
+                        self.pursuer.pos.re(),
+                        self.pursuer.pos.im(),
+                        self.target.pos.re() - self.pursuer.pos.re(),
+                        self.target.pos.im() - self.pursuer.pos.im(),
+                    ]
+                }
+            }
+            Perspective::Target => [
+                self.target.pos.re(),
+                self.target.pos.im(),
+                self.pursuer.pos.re() - self.target.pos.re(),
+                self.pursuer.pos.im() - self.target.pos.im(),
+            ],
+        };
+
+        Tensor::from_floats([input], device)
     }
 
     fn step_simultaneous(
