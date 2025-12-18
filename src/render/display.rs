@@ -1,10 +1,10 @@
 use super::utils::Data;
-use crate::consts::FONT_SIZE;
-use crate::env::context::BallEnv;
-use crate::env::walls::WALLS;
+use crate::consts::{FONT_SIZE, SIZE};
+use crate::env::{context::BallEnv, walls::WALLS};
 use crate::mode::{MODE, Mode};
 use burn::tensor::backend::Backend;
 use macroquad::prelude::*;
+use num_complex::{ComplexFloat, c32};
 use std::sync::mpsc::Receiver;
 
 /// Render the situation based on the data received from either training or inference.
@@ -39,10 +39,24 @@ pub async fn display<B: Backend, Q: Backend>(
 
         for (isometry, shape) in WALLS.shapes() {
             let cuboid = shape.as_cuboid().unwrap();
-            let center = isometry.translation.vector;
-            let w = cuboid.half_extents.x * 2.0;
-            let h = cuboid.half_extents.y * 2.0;
-            draw_rectangle(center.x - w / 2.0, center.y - h / 2.0, w, h, BLACK);
+            let center = c32(
+                isometry.translation.vector.x * SIZE.re(),
+                isometry.translation.vector.y * SIZE.im(),
+            );
+            let size = c32(
+                cuboid.half_extents.x * SIZE.re(),
+                cuboid.half_extents.y * SIZE.im(),
+            );
+
+            let pad = (c32(screen_width(), screen_height()) - SIZE) / 2.0;
+
+            draw_rectangle(
+                pad.re() + center.re() - size.re(),
+                pad.re() + center.im() - size.im(),
+                size.re() * 2.0,
+                size.im() * 2.0,
+                BLACK,
+            );
         }
 
         next_frame().await;

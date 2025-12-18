@@ -18,7 +18,7 @@ pub const TARGET_SPEED: f32 = 3.0 * PURSUER_SPEED;
 // pub const N_TARGETS: usize = 5;
 
 // Visuals
-pub const SIZE: Complex32 = Complex32::new(1920.0, 1080.0);
+pub const SIZE: Complex32 = Complex32::new(1080.0, 1080.0);
 pub const RADIUS: f32 = 5.0;
 pub const FONT_SIZE: u16 = 17;
 

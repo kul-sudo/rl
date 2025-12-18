@@ -1,36 +1,29 @@
-use crate::consts::SIZE;
 use num_complex::{Complex32, ComplexFloat, c32};
 use parry2d::{
-    math::Isometry,
-    query::intersection_test,
+    math::{Isometry, Point},
+    query::PointQuery,
     shape::{Compound, SharedShape},
 };
 use std::sync::LazyLock;
 
 pub const WALL_SIZE: f32 = 0.1;
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
-    let positions = [c32(0.1, 0.1), c32(0.5, 0.9), c32(0.2, 0.8)];
+    let positions = [c32(0.5, 0.5), c32(0.1, 0.1), c32(1.0, 1.0)];
 
     Compound::new(
         positions
             .into_iter()
             .map(|pos| {
-                let scaled = c32(pos.re() * SIZE.re(), pos.im() * SIZE.im());
+                let scaled = c32(pos.re(), pos.im());
                 (
                     Isometry::translation(scaled.re(), scaled.im()),
-                    SharedShape::cuboid(WALL_SIZE * SIZE.re(), WALL_SIZE * SIZE.im()),
+                    SharedShape::cuboid(WALL_SIZE, WALL_SIZE),
                 )
             })
             .collect::<Vec<_>>(),
     )
 });
 
-pub fn pos_invalid(pos: &Complex32, shape: SharedShape) -> bool {
-    intersection_test(
-        &Isometry::identity(),
-        &*WALLS,
-        &Isometry::translation(pos.re() * SIZE.re(), pos.im() * SIZE.im()),
-        &*shape,
-    )
-    .unwrap()
+pub fn pos_invalid(pos: &Complex32) -> bool {
+    WALLS.contains_local_point(&Point::new(pos.re(), pos.im()))
 }

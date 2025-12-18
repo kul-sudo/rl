@@ -26,11 +26,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     epsilon: &mut f64,
     device: &B::Device,
 ) {
-    let mut pursuer: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
-    let mut p_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
+    let mut pursuer: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512).init(device);
+    let mut p_critic: Critic<B> = CriticConfig::new(FACTORS, 512).init(device);
 
-    let mut target: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
-    let mut t_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
+    let mut target: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512).init(device);
+    let mut t_critic: Critic<B> = CriticConfig::new(FACTORS, 512).init(device);
 
     let mut p_optimizer = AdamWConfig::new()
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))

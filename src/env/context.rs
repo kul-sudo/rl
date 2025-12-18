@@ -10,15 +10,14 @@ use macroquad::prelude::*;
 use num_complex::{Complex32, ComplexFloat, c32};
 use parry2d::{
     math::{Isometry, Point, Vector},
-    query::{Ray, RayCast, contact, intersection_test},
-    shape::{Ball, Compound, SharedShape},
+    query::{Ray, RayCast, contact},
+    shape::Ball,
 };
-use rand_distr::Normal;
 use std::f32::consts::PI;
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
-    fn state_tensor(&self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2>;
+    fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2>;
     fn step_simultaneous(
         &mut self,
         p_action: B::IntElem,
@@ -39,7 +38,7 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
     pos.re = pos.re().clamp(0.0, 1.0);
     pos.im = pos.im().clamp(0.0, 1.0);
 
-    if pos_invalid(pos, SharedShape::ball(RADIUS)) {
+    if pos_invalid(pos) {
         *pos = prev;
     }
 }
@@ -47,6 +46,7 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
 #[derive(Clone, Debug)]
 pub struct Pursuer {
     pos: Complex32,
+    memory: Option<Complex32>,
     time: u32,
 }
 
@@ -66,31 +66,32 @@ impl<B: Backend> Env<B> for BallEnv {
         *self = Self::new();
     }
 
-    fn state_tensor(&self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
+    fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
         let input = match perspective {
             Perspective::Pursuer => {
                 // Take into account that a wall might be in the way of a connecting ray
                 let direction = self.target.pos - self.pursuer.pos;
-                let distance_norm = (direction * SIZE).abs();
-                let ray_origin = Point::new(
-                    self.pursuer.pos.re() * SIZE.re(),
-                    self.pursuer.pos.im() * SIZE.im(),
-                );
+                let distance = direction.abs();
+
                 let ray_direction = Vector::new(direction.re(), direction.im()).normalize();
+                let ray_origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
                 let ray = Ray::new(ray_origin, ray_direction);
-                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, f32::MAX, false);
-                let wall_covers = wall_hit.is_some_and(|hit| hit < distance_norm);
+
+                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, false);
+                let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
 
                 if wall_covers {
-                    dbg!(1);
-                    let distr = Normal::new(0.0, 0.4).unwrap();
+                    if self.pursuer.memory.is_none() {
+                        self.pursuer.memory = Some(self.target.pos);
+                    }
                     [
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
-                        self.target.pos.re() - self.pursuer.pos.re() + rng().sample(distr),
-                        self.target.pos.im() - self.pursuer.pos.im() + rng().sample(distr),
+                        self.target.pos.re() - self.pursuer.memory.unwrap().re(),
+                        self.target.pos.im() - self.pursuer.memory.unwrap().im(),
                     ]
                 } else {
+                    self.pursuer.memory = None;
                     [
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
@@ -117,8 +118,8 @@ impl<B: Backend> Env<B> for BallEnv {
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
-        let p_angle = 2.0 * PI * (p_action.to_u32() % N_DIRECTIONS) as f32 / N_DIRECTIONS as f32;
-        let t_angle = 2.0 * PI * (t_action.to_u32() % N_DIRECTIONS) as f32 / N_DIRECTIONS as f32;
+        let p_angle = 2.0 * PI * p_action.to_u32() as f32 / N_DIRECTIONS as f32;
+        let t_angle = 2.0 * PI * t_action.to_u32() as f32 / N_DIRECTIONS as f32;
 
         advance(&mut self.pursuer.pos, p_angle, PURSUER_SPEED);
         advance(&mut self.target.pos, t_angle, TARGET_SPEED);
@@ -149,7 +150,7 @@ impl<B: Backend> Env<B> for BallEnv {
         } else if expired {
             5.0
         } else {
-            0.001
+            -0.001
         };
         let t_done = collision;
 
@@ -168,7 +169,7 @@ impl BallEnv {
         let valid_spawn = || {
             loop {
                 let pos = c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0));
-                if !pos_invalid(&pos, SharedShape::ball(RADIUS)) {
+                if !pos_invalid(&pos) {
                     break pos;
                 }
             }
@@ -177,6 +178,7 @@ impl BallEnv {
         Self {
             pursuer: Pursuer {
                 pos: valid_spawn(),
+                memory: None,
                 time: 0,
             },
             target: Target { pos: valid_spawn() },
