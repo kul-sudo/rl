@@ -25,9 +25,15 @@ use burn::{
     },
 };
 use macroquad::prelude::*;
-use std::{marker::PhantomData, path::Path, sync::mpsc::Sender};
+use std::{
+    marker::PhantomData,
+    path::Path,
+    sync::mpsc::Sender,
+    time::{Duration, Instant},
+};
 
 const ENTROPY_ALPHA: f32 = 0.05;
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     mut env: E,
@@ -58,6 +64,8 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
+
+    let mut checkpoint_timer = Instant::now();
 
     loop {
         env.reset();
@@ -154,33 +162,37 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             }
         }
 
-        pursuer
-            .clone()
-            .save_file(
-                Path::new(ARTIFACT_DIR).join("pursuer"),
-                &CompactRecorder::new(),
-            )
-            .unwrap();
-        target
-            .clone()
-            .save_file(
-                Path::new(ARTIFACT_DIR).join("target"),
-                &CompactRecorder::new(),
-            )
-            .unwrap();
-        p_critic
-            .clone()
-            .save_file(
-                Path::new(ARTIFACT_DIR).join("p_critic"),
-                &CompactRecorder::new(),
-            )
-            .unwrap();
-        t_critic
-            .clone()
-            .save_file(
-                Path::new(ARTIFACT_DIR).join("t_critic"),
-                &CompactRecorder::new(),
-            )
-            .unwrap();
+        if checkpoint_timer.elapsed() >= CHECKPOINT_INTERVAL {
+            checkpoint_timer = Instant::now();
+
+            pursuer
+                .clone()
+                .save_file(
+                    Path::new(ARTIFACT_DIR).join("pursuer"),
+                    &CompactRecorder::new(),
+                )
+                .unwrap();
+            target
+                .clone()
+                .save_file(
+                    Path::new(ARTIFACT_DIR).join("target"),
+                    &CompactRecorder::new(),
+                )
+                .unwrap();
+            p_critic
+                .clone()
+                .save_file(
+                    Path::new(ARTIFACT_DIR).join("p_critic"),
+                    &CompactRecorder::new(),
+                )
+                .unwrap();
+            t_critic
+                .clone()
+                .save_file(
+                    Path::new(ARTIFACT_DIR).join("t_critic"),
+                    &CompactRecorder::new(),
+                )
+                .unwrap();
+        }
     }
 }
