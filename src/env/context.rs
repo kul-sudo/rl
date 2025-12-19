@@ -7,13 +7,16 @@ use burn::{
     tensor::{Tensor, backend::Backend},
 };
 use macroquad::prelude::*;
-use num_complex::{Complex32, ComplexFloat, c32};
+use num::{
+    complex::{Complex32, ComplexFloat, c32},
+    traits::identities::Zero,
+};
 use parry2d::{
     math::{Isometry, Point, Vector},
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::PI;
+use std::f32::consts::TAU;
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
@@ -32,26 +35,39 @@ pub enum Perspective {
 }
 
 fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
-    let movement = Complex32::from_polar(speed, angle);
+    let mut movement = Complex32::from_polar(speed, angle);
 
-    let ray = Ray::new(
-        Point::new(pos.re(), pos.im()),
-        Vector::new(movement.re(), movement.im()).normalize(),
-    );
+    if !movement.is_zero() {
+        let ray_dir = Vector::new(movement.re(), movement.im()).normalize();
+        let ray = Ray::new(Point::new(pos.re(), pos.im()), ray_dir);
 
-    match WALLS.cast_ray(&Isometry::identity(), &ray, speed, false) {
-        Some(toi) => {
-            if toi < speed {
-                *pos += Complex32::from_polar(toi, angle);
+        match WALLS.cast_ray_and_get_normal(&Isometry::identity(), &ray, speed, true) {
+            Some(hit) => {
+                *pos += Complex32::from_polar(hit.time_of_impact, angle);
+
+                // Slide
+                let remaining = speed - hit.time_of_impact;
+                if remaining > 0.0 {
+                    let move_vec = Vector::new(movement.re(), movement.im());
+
+                    let push_depth = move_vec.dot(&hit.normal);
+                    let blocked_velocity = hit.normal * push_depth;
+                    let slide_direction = move_vec - blocked_velocity;
+
+                    if slide_direction.norm() > 0.0 {
+                        let final_slide_move = slide_direction.normalize() * remaining;
+                        *pos += c32(final_slide_move.x, final_slide_move.y);
+                    }
+                }
             }
-        }
-        None => {
-            *pos += movement;
+            None => {
+                *pos += movement;
+            }
         }
     }
 
-    pos.re = pos.re.clamp(0.0, 1.0);
-    pos.im = pos.im.clamp(0.0, 1.0);
+    pos.re = pos.re().clamp(0.0, 1.0);
+    pos.im = pos.im().clamp(0.0, 1.0);
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +104,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 let ray_origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
                 let ray = Ray::new(ray_origin, ray_direction);
 
-                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, false);
+                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
                 let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
 
                 if wall_covers {
@@ -129,8 +145,8 @@ impl<B: Backend> Env<B> for BallEnv {
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
-        let p_angle = 2.0 * PI * p_action.to_u32() as f32 / N_DIRECTIONS as f32;
-        let t_angle = 2.0 * PI * t_action.to_u32() as f32 / N_DIRECTIONS as f32;
+        let p_angle = TAU * p_action.to_u32() as f32 / N_DIRECTIONS as f32;
+        let t_angle = TAU * t_action.to_u32() as f32 / N_DIRECTIONS as f32;
 
         advance(&mut self.pursuer.pos, p_angle, PURSUER_SPEED);
         advance(&mut self.target.pos, t_angle, TARGET_SPEED);
@@ -140,13 +156,21 @@ impl<B: Backend> Env<B> for BallEnv {
         let prev_distance = (initial.pursuer.pos - initial.target.pos).abs();
         let new_distance = (self.pursuer.pos - self.target.pos).abs();
 
+        self.pursuer.time += 1;
+
         let total_speed = PURSUER_SPEED + TARGET_SPEED;
+        let expired = self.pursuer.time == PURSUER_TIME_CAP;
 
         // Pursuer
         let distance_reward = (prev_distance - new_distance) / total_speed;
-        let p_reward = if collision { 2.0 } else { distance_reward };
-        self.pursuer.time += 1;
-        let expired = self.pursuer.time == PURSUER_TIME_CAP;
+        let punishment = distance_reward * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32;
+        let p_reward = if collision {
+            5.0
+        } else if expired {
+            -5.0
+        } else {
+            2.0 * distance_reward - punishment
+        };
         let p_done = collision || expired;
 
         let p_step = Step::new(
@@ -158,10 +182,8 @@ impl<B: Backend> Env<B> for BallEnv {
         // Target
         let t_reward = if collision {
             -5.0
-        } else if expired {
-            5.0
         } else {
-            1.0
+            5.0 * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32
         };
         let t_done = collision;
 

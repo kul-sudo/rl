@@ -4,7 +4,7 @@ use crate::env::{context::BallEnv, walls::WALLS};
 use crate::mode::{MODE, Mode};
 use burn::tensor::backend::Backend;
 use macroquad::prelude::*;
-use num_complex::{ComplexFloat, c32};
+use num::complex::{ComplexFloat, c32};
 use std::sync::mpsc::Receiver;
 
 /// Render the situation based on the data received from either training or inference.
@@ -15,7 +15,7 @@ pub async fn display<B: Backend, Q: Backend>(
     let mut latest_data = None;
 
     loop {
-        clear_background(WHITE);
+        clear_background(BLACK);
 
         let pad = (c32(screen_width(), screen_height()) - SIZE) / 2.0;
 
@@ -39,7 +39,7 @@ pub async fn display<B: Backend, Q: Backend>(
                     let text = format!("Exploration = {:.2}", data.epsilon.unwrap());
                     let size = measure_text(&text, None, FONT_SIZE, 1.0);
                     set_default_camera();
-                    draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
+                    draw_text(&text, 0.0, size.height, FONT_SIZE as f32, WHITE);
                     set_camera(&padding_camera);
                 }
             }
@@ -66,11 +66,11 @@ pub async fn display<B: Backend, Q: Backend>(
                 center.im() - size.im(),
                 size.re() * 2.0,
                 size.im() * 2.0,
-                BLACK,
+                DARKGRAY,
             );
         }
 
-        draw_rectangle_lines(0.0, 0.0, SIZE.re(), SIZE.im(), 4.0, BLACK);
+        draw_rectangle_lines(0.0, 0.0, SIZE.re(), SIZE.im(), 4.0, DARKGRAY);
 
         next_frame().await;
     }

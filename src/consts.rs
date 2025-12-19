@@ -1,4 +1,5 @@
-use num_complex::Complex32;
+use num::complex::Complex32;
+use std::f32::consts::SQRT_2;
 
 // Parameters
 pub const FACTORS: usize = 4;
@@ -9,11 +10,11 @@ pub const EPSILON_DEFAULT: f64 = 0.0;
 pub const EPSILON_MIN: f64 = 0.0;
 
 // Pursuer
-pub const PURSUER_SPEED: f32 = 0.02;
+pub const PURSUER_SPEED: f32 = 0.01;
 pub const PURSUER_TIME_CAP: u32 = 3000;
 
 // Target
-pub const TARGET_SPEED: f32 = 1.2 * PURSUER_SPEED;
+pub const TARGET_SPEED: f32 = SQRT_2 * PURSUER_SPEED;
 
 // pub const N_TARGETS: usize = 5;
 

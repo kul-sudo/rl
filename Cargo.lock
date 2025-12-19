@@ -4945,10 +4945,9 @@ dependencies = [
  "bincode",
  "burn",
  "macroquad",
- "num-complex",
+ "num",
  "parry2d",
  "rand 0.9.2",
- "rand_distr",
 ]
 
 [[package]]

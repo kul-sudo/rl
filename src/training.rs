@@ -108,8 +108,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let entropy_loss = entropy.mean();
 
             let pick = log_probs.gather(1, Tensor::from_data([[action]], device));
-            let actor_loss: Tensor<B, 1> =
-                -(pick * advantage.detach()).mean() - ENTROPY_ALPHA * entropy_loss;
+            let actor_loss = -(pick * advantage.detach()).mean() - ENTROPY_ALPHA * entropy_loss;
 
             let grads = actor_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, actor);

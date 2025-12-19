@@ -1,4 +1,4 @@
-use num_complex::{Complex32, ComplexFloat, c32};
+use num::complex::{Complex32, ComplexFloat, c32};
 use parry2d::{
     math::{Isometry, Point},
     query::PointQuery,
@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 pub const WALL_SIZE: f32 = 0.1;
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
-    let positions = [c32(0.5, 0.5), c32(0.1, 0.1), c32(0.1, 0.8)];
+    let positions = [c32(0.5, 0.5), c32(0.0, 0.0), c32(0.0, 0.8)];
 
     Compound::new(
         positions
