@@ -32,15 +32,26 @@ pub enum Perspective {
 }
 
 fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
-    let prev = *pos;
-    pos.re += speed * angle.cos();
-    pos.im += speed * angle.sin();
-    pos.re = pos.re().clamp(0.0, 1.0);
-    pos.im = pos.im().clamp(0.0, 1.0);
+    let movement = Complex32::from_polar(speed, angle);
 
-    if pos_invalid(pos) {
-        *pos = prev;
+    let ray = Ray::new(
+        Point::new(pos.re(), pos.im()),
+        Vector::new(movement.re(), movement.im()).normalize(),
+    );
+
+    match WALLS.cast_ray(&Isometry::identity(), &ray, speed, false) {
+        Some(toi) => {
+            if toi < speed {
+                *pos += Complex32::from_polar(toi, angle);
+            }
+        }
+        None => {
+            *pos += movement;
+        }
     }
+
+    pos.re = pos.re.clamp(0.0, 1.0);
+    pos.im = pos.im.clamp(0.0, 1.0);
 }
 
 #[derive(Clone, Debug)]
@@ -133,7 +144,7 @@ impl<B: Backend> Env<B> for BallEnv {
 
         // Pursuer
         let distance_reward = (prev_distance - new_distance) / total_speed;
-        let p_reward = if collision { 5.0 } else { distance_reward };
+        let p_reward = if collision { 2.0 } else { distance_reward };
         self.pursuer.time += 1;
         let expired = self.pursuer.time == PURSUER_TIME_CAP;
         let p_done = collision || expired;
@@ -146,11 +157,11 @@ impl<B: Backend> Env<B> for BallEnv {
 
         // Target
         let t_reward = if collision {
-            -20.0
+            -5.0
         } else if expired {
             5.0
         } else {
-            -0.001
+            1.0
         };
         let t_done = collision;
 
@@ -203,12 +214,12 @@ impl BallEnv {
     }
 
     pub fn render(&self) {
-        let to_screen = |pos: Complex32| vec2(SIZE.re() * pos.re(), SIZE.im() * pos.im());
+        let to_screen = |pos: Complex32| c32(SIZE.re() * pos.re(), SIZE.im() * pos.im());
 
         let p = to_screen(self.pursuer.pos);
         let t = to_screen(self.target.pos);
 
-        draw_circle(p.x, p.y, RADIUS, BLUE);
-        draw_circle(t.x, t.y, RADIUS, GREEN);
+        draw_circle(p.re(), p.im(), RADIUS, BLUE);
+        draw_circle(t.re(), t.im(), RADIUS, GREEN);
     }
 }

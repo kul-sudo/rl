@@ -8,17 +8,26 @@ use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
 };
-use ::rand::{Rng, rng};
+use ::rand::{
+    distr::{Distribution, weighted::WeightedIndex},
+    rng,
+};
 use burn::{
     grad_clipping::GradientClippingConfig,
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     record::CompactRecorder,
-    tensor::{ElementConversion, Tensor, activation::log_softmax, backend::AutodiffBackend},
+    tensor::{
+        ElementConversion, Tensor,
+        activation::{log_softmax, softmax},
+        backend::AutodiffBackend,
+    },
 };
 use macroquad::prelude::*;
 use std::{marker::PhantomData, path::Path, sync::mpsc::Sender};
+
+const ENTROPY_ALPHA: f32 = 0.05;
 
 pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     mut env: E,
@@ -26,11 +35,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     epsilon: &mut f64,
     device: &B::Device,
 ) {
-    let mut pursuer: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512).init(device);
-    let mut p_critic: Critic<B> = CriticConfig::new(FACTORS, 512).init(device);
+    let mut pursuer: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
+    let mut p_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
 
-    let mut target: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512).init(device);
-    let mut t_critic: Critic<B> = CriticConfig::new(FACTORS, 512).init(device);
+    let mut target: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
+    let mut t_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
 
     let mut p_optimizer = AdamWConfig::new()
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
@@ -56,6 +65,12 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         let mut p_state = env.state_tensor(Perspective::Pursuer, device);
         let mut t_state = env.state_tensor(Perspective::Target, device);
 
+        let probs_sample = |probs: Tensor<B, 2>| {
+            let probs_vec: Vec<f32> = probs.into_data().into_vec().unwrap();
+            let dist = WeightedIndex::new(probs_vec).unwrap();
+            dist.sample(&mut rng())
+        };
+
         let update_agent = |actor: &mut Actor<B>,
                             critic: &mut Critic<B>,
                             actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
@@ -79,10 +94,14 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             *critic = critic_optimizer.step(1e-4, critic.clone(), grads_params);
 
             let logits = actor.forward(state.clone());
-            let log_probs = log_softmax(logits, 1);
-            let pick = log_probs.gather(1, Tensor::from_data([[action]], device));
+            let log_probs = log_softmax(logits.clone(), 1);
+            let probs = softmax(logits, 1);
+            let entropy = -(probs.clone() * log_probs.clone()).sum_dim(1);
+            let entropy_loss = entropy.mean();
 
-            let actor_loss = -(pick * advantage.detach()).mean();
+            let pick = log_probs.gather(1, Tensor::from_data([[action]], device));
+            let actor_loss: Tensor<B, 1> =
+                -(pick * advantage.detach()).mean() - ENTROPY_ALPHA * entropy_loss;
 
             let grads = actor_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, actor);
@@ -98,17 +117,13 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 _phantom: PhantomData,
             });
 
-            let p_action = if rng().random_bool(*epsilon) {
-                rng().random_range(0..N_DIRECTIONS).elem::<B::IntElem>()
-            } else {
-                pursuer.forward(p_state.clone()).argmax(1).into_scalar()
-            };
+            let p_logits = pursuer.forward(p_state.clone());
+            let p_probs = softmax(p_logits, 1);
+            let p_action = B::IntElem::from_elem(probs_sample(p_probs));
 
-            let t_action = if rng().random_bool(*epsilon) {
-                rng().random_range(0..N_DIRECTIONS).elem::<B::IntElem>()
-            } else {
-                target.forward(t_state.clone()).argmax(1).into_scalar()
-            };
+            let t_logits = target.forward(t_state.clone());
+            let t_probs = softmax(t_logits, 1);
+            let t_action = B::IntElem::from_elem(probs_sample(t_probs));
 
             let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
 

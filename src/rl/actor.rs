@@ -2,7 +2,7 @@ use burn::{
     config::Config,
     module::Module,
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, activation::relu, backend::Backend},
+    tensor::{Tensor, activation::mish, backend::Backend},
 };
 
 /// Configuration for the Actor network.
@@ -35,8 +35,8 @@ pub struct Actor<B: Backend> {
 
 impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = relu(self.fc1.forward(x));
-        let x = relu(self.fc2.forward(x));
+        let x = mish(self.fc1.forward(x));
+        let x = mish(self.fc2.forward(x));
 
         self.fc3.forward(x)
     }

@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 pub const WALL_SIZE: f32 = 0.1;
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
-    let positions = [c32(0.5, 0.5), c32(0.1, 0.1), c32(1.0, 1.0)];
+    let positions = [c32(0.5, 0.5), c32(0.1, 0.1), c32(0.1, 0.8)];
 
     Compound::new(
         positions

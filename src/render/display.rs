@@ -17,6 +17,17 @@ pub async fn display<B: Backend, Q: Backend>(
     loop {
         clear_background(WHITE);
 
+        let pad = (c32(screen_width(), screen_height()) - SIZE) / 2.0;
+
+        let padding_camera = Camera2D::from_display_rect(Rect::new(
+            -pad.re(),
+            -pad.im(),
+            screen_width(),
+            screen_height(),
+        ));
+
+        set_camera(&padding_camera);
+
         match *MODE {
             Mode::Training => {
                 while let Ok(data) = data_rx.try_recv() {
@@ -25,9 +36,11 @@ pub async fn display<B: Backend, Q: Backend>(
                 if let Some(ref data) = latest_data {
                     data.env.render();
 
-                    let text = format!("Exploration = {:.2}", data.epsilon.unwrap(),);
+                    let text = format!("Exploration = {:.2}", data.epsilon.unwrap());
                     let size = measure_text(&text, None, FONT_SIZE, 1.0);
+                    set_default_camera();
                     draw_text(&text, 0.0, size.height, FONT_SIZE as f32, BLACK);
+                    set_camera(&padding_camera);
                 }
             }
             Mode::Inference => {
@@ -48,16 +61,16 @@ pub async fn display<B: Backend, Q: Backend>(
                 cuboid.half_extents.y * SIZE.im(),
             );
 
-            let pad = (c32(screen_width(), screen_height()) - SIZE) / 2.0;
-
             draw_rectangle(
-                pad.re() + center.re() - size.re(),
-                pad.re() + center.im() - size.im(),
+                center.re() - size.re(),
+                center.im() - size.im(),
                 size.re() * 2.0,
                 size.im() * 2.0,
                 BLACK,
             );
         }
+
+        draw_rectangle_lines(0.0, 0.0, SIZE.re(), SIZE.im(), 4.0, BLACK);
 
         next_frame().await;
     }
