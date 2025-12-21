@@ -49,9 +49,9 @@ pub async fn main() {
                 inference::<InferenceBackend, BallEnv>(env, &data_tx_sync, &device);
             }
             Mode::Training => {
-                let mut epsilon = EPSILON_DEFAULT;
+                let mut curiosity = CURIOSITY_DEFAULT;
 
-                training::<TrainingBackend, BallEnv>(env, &data_tx, &mut epsilon, &device);
+                training::<TrainingBackend, BallEnv>(env, &data_tx, &mut curiosity, &device);
             }
         }
     });

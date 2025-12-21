@@ -5,6 +5,6 @@ use std::marker::PhantomData;
 /// Description of the current situation.
 pub struct Data<B: Backend, T: Env<B>> {
     pub env: T,
-    pub epsilon: Option<f64>,
+    pub curiosity: Option<f32>,
     pub _phantom: PhantomData<B>,
 }

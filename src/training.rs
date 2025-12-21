@@ -8,18 +8,15 @@ use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
 };
-use ::rand::{
-    distr::{Distribution, weighted::WeightedIndex},
-    rng,
-};
 use burn::{
     grad_clipping::GradientClippingConfig,
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        ElementConversion, Tensor,
+        Distribution, ElementConversion, Tensor,
         activation::{log_softmax, softmax},
         backend::AutodiffBackend,
     },
@@ -32,20 +29,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-const ENTROPY_ALPHA: f32 = 0.05;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     mut env: E,
     data_tx: &Sender<Data<B, E>>,
-    epsilon: &mut f64,
+    curiosity: &mut f32,
     device: &B::Device,
 ) {
-    let mut pursuer: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
-    let mut p_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
+    let mut pursuer: Actor<B> =
+        ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize, 1024).init(device);
+    let mut p_critic: Critic<B> = CriticConfig::new(PURSUER_FACTORS, 1024).init(device);
 
-    let mut target: Actor<B> = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 1024).init(device);
-    let mut t_critic: Critic<B> = CriticConfig::new(FACTORS, 1024).init(device);
+    let mut target: Actor<B> =
+        ActorConfig::new(TARGET_FACTORS, N_DIRECTIONS as usize, 1024).init(device);
+    let mut t_critic: Critic<B> = CriticConfig::new(TARGET_FACTORS, 1024).init(device);
 
     let mut p_optimizer = AdamWConfig::new()
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
@@ -73,10 +71,17 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         let mut p_state = env.state_tensor(Perspective::Pursuer, device);
         let mut t_state = env.state_tensor(Perspective::Target, device);
 
-        let probs_sample = |probs: Tensor<B, 2>| {
-            let probs_vec: Vec<f32> = probs.into_data().into_vec().unwrap();
-            let dist = WeightedIndex::new(probs_vec).unwrap();
-            dist.sample(&mut rng())
+        let probs_sample = |logits: Tensor<B, 2>| {
+            let gumbel_noise = logits
+                .random_like(Distribution::Uniform(f32::EPSILON as f64, 1.0))
+                .log()
+                .neg()
+                .log()
+                .neg();
+
+            let sampled_indices = (logits + gumbel_noise).argmax(1);
+
+            sampled_indices.into_scalar()
         };
 
         let update_agent = |actor: &mut Actor<B>,
@@ -85,7 +90,8 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                             critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
                             state: &mut Tensor<B, 2>,
                             step: &Step<B>,
-                            action: B::IntElem| {
+                            action: B::IntElem,
+                            curiosity: f32| {
             let reward_tensor = Tensor::from_floats([[step.reward]], device);
             let value = critic.forward(state.clone());
             let next_value = if step.done {
@@ -99,16 +105,20 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let critic_loss = MseLoss::new().forward(value, td_target, Reduction::Mean);
             let grads = critic_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, critic);
-            *critic = critic_optimizer.step(1e-4, critic.clone(), grads_params);
+            *critic = critic_optimizer.step(3e-4, critic.clone(), grads_params);
 
             let logits = actor.forward(state.clone());
+            if logits.clone().contains_nan().into_scalar().to_bool() {
+                panic!();
+            }
+
             let log_probs = log_softmax(logits.clone(), 1);
             let probs = softmax(logits, 1);
             let entropy = -(probs.clone() * log_probs.clone()).sum_dim(1);
             let entropy_loss = entropy.mean();
 
             let pick = log_probs.gather(1, Tensor::from_data([[action]], device));
-            let actor_loss = -(pick * advantage.detach()).mean() - ENTROPY_ALPHA * entropy_loss;
+            let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
 
             let grads = actor_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, actor);
@@ -120,17 +130,15 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         loop {
             let _ = data_tx.send(Data {
                 env: env.clone(),
-                epsilon: Some(*epsilon),
+                curiosity: Some(*curiosity),
                 _phantom: PhantomData,
             });
 
             let p_logits = pursuer.forward(p_state.clone());
-            let p_probs = softmax(p_logits, 1);
-            let p_action = B::IntElem::from_elem(probs_sample(p_probs));
+            let p_action = B::IntElem::from_elem(probs_sample(p_logits));
 
             let t_logits = target.forward(t_state.clone());
-            let t_probs = softmax(t_logits, 1);
-            let t_action = B::IntElem::from_elem(probs_sample(t_probs));
+            let t_action = B::IntElem::from_elem(probs_sample(t_logits));
 
             let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
 
@@ -142,6 +150,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 &mut p_state,
                 &p_step,
                 p_action,
+                *curiosity,
             );
 
             update_agent(
@@ -152,9 +161,10 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 &mut t_state,
                 &t_step,
                 t_action,
+                *curiosity,
             );
 
-            *epsilon = (*epsilon * EPSILON_DECAY).max(EPSILON_MIN);
+            *curiosity = (*curiosity * CURIOSITY_DECAY).max(CURIOSITY_MIN);
 
             if p_step.done || t_step.done {
                 break;

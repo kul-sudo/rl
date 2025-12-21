@@ -16,7 +16,7 @@ use parry2d::{
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::TAU;
+use std::f32::consts::{SQRT_2, TAU};
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
@@ -35,7 +35,7 @@ pub enum Perspective {
 }
 
 fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
-    let mut movement = Complex32::from_polar(speed, angle);
+    let movement = Complex32::from_polar(speed, angle);
 
     if !movement.is_zero() {
         let ray_dir = Vector::new(movement.re(), movement.im()).normalize();
@@ -43,31 +43,35 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
 
         match WALLS.cast_ray_and_get_normal(&Isometry::identity(), &ray, speed, true) {
             Some(hit) => {
-                *pos += Complex32::from_polar(hit.time_of_impact, angle);
+                let normal = Vector::new(hit.normal.x, hit.normal.y);
+                let tangent = Vector::new(-normal.y, normal.x);
 
-                // Slide
-                let remaining = speed - hit.time_of_impact;
-                if remaining > 0.0 {
-                    let move_vec = Vector::new(movement.re(), movement.im());
+                let remaining_movement =
+                    movement - Complex32::from_polar(hit.time_of_impact, angle);
+                let slide_dir = tangent.dot(&Vector::new(
+                    remaining_movement.re(),
+                    remaining_movement.im(),
+                ));
 
-                    let push_depth = move_vec.dot(&hit.normal);
-                    let blocked_velocity = hit.normal * push_depth;
-                    let slide_direction = move_vec - blocked_velocity;
-
-                    if slide_direction.norm() > 0.0 {
-                        let final_slide_move = slide_direction.normalize() * remaining;
-                        *pos += c32(final_slide_move.x, final_slide_move.y);
-                    }
-                }
+                *pos += c32(tangent.x * slide_dir, tangent.y * slide_dir);
             }
             None => {
                 *pos += movement;
             }
         }
+
+        // match WALLS.cast_ray_and_get_normal(&Isometry::identity(), &ray, speed, true) {
+        //     Some(hit) => {
+        //         *pos += Complex32::from_polar(hit.time_of_impact, angle);
+        //     }
+        //     None => {
+        //         *pos += movement;
+        //     }
+        // }
     }
 
-    pos.re = pos.re().clamp(0.0, 1.0);
-    pos.im = pos.im().clamp(0.0, 1.0);
+    pos.re = pos.re().clamp(f32::EPSILON, 1.0 - f32::EPSILON);
+    pos.im = pos.im().clamp(f32::EPSILON, 1.0 - f32::EPSILON);
 }
 
 #[derive(Clone, Debug)]
@@ -94,48 +98,93 @@ impl<B: Backend> Env<B> for BallEnv {
     }
 
     fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
-        let input = match perspective {
+        match perspective {
             Perspective::Pursuer => {
-                // Take into account that a wall might be in the way of a connecting ray
                 let direction = self.target.pos - self.pursuer.pos;
                 let distance = direction.abs();
-
-                let ray_direction = Vector::new(direction.re(), direction.im()).normalize();
-                let ray_origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
-                let ray = Ray::new(ray_origin, ray_direction);
+                let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
+                let origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
+                let ray = Ray::new(origin, ray_dir);
 
                 let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
                 let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
 
-                if wall_covers {
+                let context = if wall_covers {
                     if self.pursuer.memory.is_none() {
                         self.pursuer.memory = Some(self.target.pos);
                     }
                     [
+                        0.0,
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
-                        self.target.pos.re() - self.pursuer.memory.unwrap().re(),
-                        self.target.pos.im() - self.pursuer.memory.unwrap().im(),
+                        0.0,
+                        0.0,
+                        // self.target.pos.re() - self.pursuer.memory.unwrap().re(),
+                        // self.target.pos.im() - self.pursuer.memory.unwrap().im(),
                     ]
                 } else {
                     self.pursuer.memory = None;
                     [
+                        1.0,
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
                         self.target.pos.re() - self.pursuer.pos.re(),
                         self.target.pos.im() - self.pursuer.pos.im(),
                     ]
-                }
+                };
+                Tensor::from_floats([context], device)
             }
-            Perspective::Target => [
-                self.target.pos.re(),
-                self.target.pos.im(),
-                self.pursuer.pos.re() - self.target.pos.re(),
-                self.pursuer.pos.im() - self.target.pos.im(),
-            ],
-        };
+            Perspective::Target => {
+                let mut context = vec![
+                    self.target.pos.re(),
+                    self.target.pos.im(),
+                    self.pursuer.pos.re() - self.target.pos.re(),
+                    self.pursuer.pos.im() - self.target.pos.im(),
+                ];
 
-        Tensor::from_floats([input], device)
+                let origin = Point::new(self.target.pos.re(), self.target.pos.im());
+
+                for i in 0..N_LASERS {
+                    let angle = (i as f32) * TAU / N_LASERS as f32;
+                    let dir = Vector::new(angle.cos(), angle.sin());
+                    let ray = Ray::new(origin, dir);
+
+                    let laser_hit = WALLS.cast_ray(&Isometry::identity(), &ray, SQRT_2, true);
+                    let laser_distance = match laser_hit {
+                        Some(hit) => hit,
+                        None => {
+                            let cos = angle.cos();
+                            let sin = angle.sin();
+
+                            let vertical = if cos > 0.0 {
+                                (1.0 - origin.x) / cos
+                            } else if cos < 0.0 {
+                                -origin.x / cos
+                            } else {
+                                f32::INFINITY
+                            };
+
+                            let horizontal = if sin > 0.0 {
+                                (1.0 - origin.y) / sin
+                            } else if sin < 0.0 {
+                                -origin.y / sin
+                            } else {
+                                f32::INFINITY
+                            };
+
+                            vertical.min(horizontal).min(SQRT_2)
+                        }
+                    };
+
+                    let proximity = 1.0 - laser_distance / SQRT_2;
+
+                    context.push(proximity);
+                }
+
+                let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
+                Tensor::from_floats([factors], device)
+            }
+        }
     }
 
     fn step_simultaneous(
@@ -163,14 +212,14 @@ impl<B: Backend> Env<B> for BallEnv {
 
         // Pursuer
         let distance_reward = (prev_distance - new_distance) / total_speed;
-        let punishment = distance_reward * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32;
         let p_reward = if collision {
             5.0
         } else if expired {
             -5.0
         } else {
-            2.0 * distance_reward - punishment
+            distance_reward * (1.0 - self.pursuer.time as f32 / PURSUER_TIME_CAP as f32)
         };
+        dbg!(p_reward);
         let p_done = collision || expired;
 
         let p_step = Step::new(
@@ -183,8 +232,9 @@ impl<B: Backend> Env<B> for BallEnv {
         let t_reward = if collision {
             -5.0
         } else {
-            5.0 * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32
+            3.0 * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32
         };
+        dbg!(t_reward);
         let t_done = collision;
 
         let t_step = Step::new(
