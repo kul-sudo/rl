@@ -70,8 +70,8 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
         // }
     }
 
-    pos.re = pos.re().clamp(f32::EPSILON, 1.0 - f32::EPSILON);
-    pos.im = pos.im().clamp(f32::EPSILON, 1.0 - f32::EPSILON);
+    pos.re = pos.re().clamp(1e-8, 1.0 - 1e-8);
+    pos.im = pos.im().clamp(1e-8, 1.0 - 1e-8);
 }
 
 #[derive(Clone, Debug)]
@@ -98,27 +98,30 @@ impl<B: Backend> Env<B> for BallEnv {
     }
 
     fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
+        let direction = self.target.pos - self.pursuer.pos;
+        let distance = direction.abs();
+        let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
+        let origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
+        let ray = Ray::new(origin, ray_dir);
+
+        let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
+        let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
+
         match perspective {
             Perspective::Pursuer => {
-                let direction = self.target.pos - self.pursuer.pos;
-                let distance = direction.abs();
-                let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
-                let origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
-                let ray = Ray::new(origin, ray_dir);
-
-                let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
-                let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
-
                 let context = if wall_covers {
                     if self.pursuer.memory.is_none() {
                         self.pursuer.memory = Some(self.target.pos);
                     }
+
+                    let search = c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0));
+
                     [
                         0.0,
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
-                        0.0,
-                        0.0,
+                        self.target.pos.re() - search.re(),
+                        self.target.pos.im() - search.im(),
                         // self.target.pos.re() - self.pursuer.memory.unwrap().re(),
                         // self.target.pos.im() - self.pursuer.memory.unwrap().im(),
                     ]
@@ -136,6 +139,7 @@ impl<B: Backend> Env<B> for BallEnv {
             }
             Perspective::Target => {
                 let mut context = vec![
+                    wall_covers as u8 as f32,
                     self.target.pos.re(),
                     self.target.pos.im(),
                     self.pursuer.pos.re() - self.target.pos.re(),
@@ -231,8 +235,10 @@ impl<B: Backend> Env<B> for BallEnv {
         // Target
         let t_reward = if collision {
             -5.0
+        } else if expired {
+            5.0
         } else {
-            3.0 * self.pursuer.time as f32 / PURSUER_TIME_CAP as f32
+            0.1
         };
         dbg!(t_reward);
         let t_done = collision;

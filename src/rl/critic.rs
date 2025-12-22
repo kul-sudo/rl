@@ -1,6 +1,6 @@
 use burn::{
     config::Config,
-    module::Module,
+    module::{Initializer, Module},
     nn::{Linear, LinearConfig},
     tensor::{Tensor, activation::mish, backend::Backend},
 };
@@ -15,9 +15,24 @@ pub struct CriticConfig {
 impl CriticConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> Critic<B> {
         Critic {
-            fc1: LinearConfig::new(self.obs_dim, self.hidden).init(device),
-            fc2: LinearConfig::new(self.hidden, self.hidden).init(device),
-            fc3: LinearConfig::new(self.hidden, 1).init(device),
+            fc1: LinearConfig::new(self.obs_dim, self.hidden)
+                .with_initializer(Initializer::KaimingNormal {
+                    gain: 1.0,
+                    fan_out_only: false,
+                })
+                .init(device),
+            fc2: LinearConfig::new(self.hidden, self.hidden)
+                .with_initializer(Initializer::KaimingNormal {
+                    gain: 1.0,
+                    fan_out_only: false,
+                })
+                .init(device),
+            fc3: LinearConfig::new(self.hidden, 1)
+                .with_initializer(Initializer::KaimingNormal {
+                    gain: 1.0,
+                    fan_out_only: false,
+                })
+                .init(device),
         }
     }
 }
@@ -31,8 +46,12 @@ pub struct Critic<B: Backend> {
 
 impl<B: Backend> Critic<B> {
     pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = mish(self.fc1.forward(state));
-        let x = mish(self.fc2.forward(x));
+        let x = self.fc1.forward(state);
+        let x = mish(x);
+
+        let x = self.fc2.forward(x);
+        let x = mish(x);
+
         self.fc3.forward(x)
     }
 }

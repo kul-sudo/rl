@@ -1,6 +1,6 @@
 use burn::{
     config::Config,
-    module::Module,
+    module::{Initializer, Module},
     nn::{Linear, LinearConfig},
     tensor::{Tensor, activation::mish, backend::Backend},
 };
@@ -19,9 +19,24 @@ impl ActorConfig {
     /// Initialize the Actor network from the config.
     pub fn init<B: Backend>(&self, device: &B::Device) -> Actor<B> {
         Actor {
-            fc1: LinearConfig::new(self.obs_dim, self.hidden).init(device),
-            fc2: LinearConfig::new(self.hidden, self.hidden).init(device),
-            fc3: LinearConfig::new(self.hidden, self.act_dim).init(device),
+            fc1: LinearConfig::new(self.obs_dim, self.hidden)
+                .with_initializer(Initializer::KaimingNormal {
+                    gain: 1.0,
+                    fan_out_only: false,
+                })
+                .init(device),
+            fc2: LinearConfig::new(self.hidden, self.hidden)
+                .with_initializer(Initializer::KaimingNormal {
+                    gain: 1.0,
+                    fan_out_only: false,
+                })
+                .init(device),
+            fc3: LinearConfig::new(self.hidden, self.act_dim)
+                .with_initializer(Initializer::Normal {
+                    mean: 0.0,
+                    std: 0.01,
+                })
+                .init(device),
         }
     }
 }
@@ -35,8 +50,11 @@ pub struct Actor<B: Backend> {
 
 impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = mish(self.fc1.forward(x));
-        let x = mish(self.fc2.forward(x));
+        let x = self.fc1.forward(x);
+        let x = mish(x);
+
+        let x = self.fc2.forward(x);
+        let x = mish(x);
 
         self.fc3.forward(x)
     }
