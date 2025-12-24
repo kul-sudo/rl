@@ -78,7 +78,13 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
 pub struct Pursuer {
     pos: Complex32,
     memory: Option<Complex32>,
-    time: u32,
+    pub time: u32,
+}
+
+impl Pursuer {
+    pub fn age(&self) -> f32 {
+        self.time as f32 / PURSUER_TIME_CAP as f32
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -221,7 +227,7 @@ impl<B: Backend> Env<B> for BallEnv {
         } else if expired {
             -5.0
         } else {
-            distance_reward * (1.0 - self.pursuer.time as f32 / PURSUER_TIME_CAP as f32)
+            distance_reward * (1.0 - self.pursuer.age())
         };
         dbg!(p_reward);
         let p_done = collision || expired;
@@ -234,11 +240,11 @@ impl<B: Backend> Env<B> for BallEnv {
 
         // Target
         let t_reward = if collision {
-            -5.0
+            -5.0 * (1.0 - self.pursuer.age())
         } else if expired {
             5.0
         } else {
-            0.1
+            -0.01
         };
         dbg!(t_reward);
         let t_done = collision;

@@ -38,12 +38,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     device: &B::Device,
 ) {
     let mut pursuer: Actor<B> =
-        ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize, 2048).init(device);
-    let mut p_critic: Critic<B> = CriticConfig::new(PURSUER_FACTORS, 2048).init(device);
+        ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize).init(device);
+    let mut p_critic: Critic<B> = CriticConfig::new(PURSUER_FACTORS).init(device);
 
-    let mut target: Actor<B> =
-        ActorConfig::new(TARGET_FACTORS, N_DIRECTIONS as usize, 2048).init(device);
-    let mut t_critic: Critic<B> = CriticConfig::new(TARGET_FACTORS, 2048).init(device);
+    let mut target: Actor<B> = ActorConfig::new(TARGET_FACTORS, N_DIRECTIONS as usize).init(device);
+    let mut t_critic: Critic<B> = CriticConfig::new(TARGET_FACTORS).init(device);
 
     // Actor optimizers
     let mut p_optimizer = AdamWConfig::new()
@@ -55,13 +54,13 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
     // Critic optimizers
     let mut pc_optimizer = AdamWConfig::new()
-        .with_cautious_weight_decay(true)
-        .with_weight_decay(1e-2)
+        // .with_cautious_weight_decay(true)
+        // .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut tc_optimizer = AdamWConfig::new()
-        .with_cautious_weight_decay(true)
-        .with_weight_decay(1e-2)
+        // .with_cautious_weight_decay(true)
+        // .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -75,7 +74,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
         let probs_sample = |logits: Tensor<B, 2>| {
             let gumbel_noise = logits
-                .random_like(Distribution::Uniform(1e-6, 1.0))
+                .random_like(Distribution::Uniform(1e-5, 1.0))
                 .log()
                 .neg()
                 .log()
@@ -107,7 +106,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let critic_loss = MseLoss::new().forward(value, td_target, Reduction::Mean);
             let grads = critic_loss.backward();
             let grads_params = GradientsParams::from_grads(grads, critic);
-            *critic = critic_optimizer.step(1e-4, critic.clone(), grads_params);
+            *critic = critic_optimizer.step(3e-4, critic.clone(), grads_params);
 
             let logits = actor.forward(state.clone());
             if logits.clone().contains_nan().into_scalar().to_bool() {

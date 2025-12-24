@@ -2,15 +2,15 @@ use num::complex::Complex32;
 use std::f32::consts::SQRT_2;
 
 // Parameters
-pub const GAMMA: f32 = 0.99;
+pub const GAMMA: f32 = 0.999;
 pub const N_DIRECTIONS: u32 = 23;
 pub const CURIOSITY_DECAY: f32 = 0.99995;
-pub const CURIOSITY_DEFAULT: f32 = 0.1;
+pub const CURIOSITY_DEFAULT: f32 = 0.05;
 pub const CURIOSITY_MIN: f32 = 0.005;
 
 // Pursuer
 pub const PURSUER_SPEED: f32 = 0.01;
-pub const PURSUER_TIME_CAP: u32 = 3000;
+pub const PURSUER_TIME_CAP: u32 = 1500;
 pub const PURSUER_FACTORS: usize = 5;
 
 // Target

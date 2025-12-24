@@ -36,7 +36,11 @@ pub async fn display<B: Backend, Q: Backend>(
                 if let Some(ref data) = latest_data {
                     data.env.render();
 
-                    let text = format!("Curiosity = {:.2}", data.curiosity.unwrap());
+                    let text = format!(
+                        "Curiosity = {:.2} Pursuer time = {:.2}",
+                        data.curiosity.unwrap(),
+                        data.env.pursuer.age()
+                    );
                     let size = measure_text(&text, None, FONT_SIZE, 1.0);
                     set_default_camera();
                     draw_text(&text, 0.0, size.height, FONT_SIZE as f32, WHITE);
