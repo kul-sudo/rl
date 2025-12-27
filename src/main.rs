@@ -6,7 +6,7 @@ mod render;
 mod rl;
 mod training;
 
-use burn::backend::{Autodiff, Cuda, cuda::CudaDevice};
+use burn::backend::{Autodiff, Cuda};
 use consts::*;
 use env::context::{BallEnv, Env};
 use inference::*;
@@ -41,7 +41,7 @@ pub async fn main() {
     let (data_tx_sync, data_rx_sync) = sync_channel::<Data<InferenceBackend, BallEnv>>(300);
 
     spawn(move || {
-        let device = CudaDevice::default();
+        let device = Default::default();
         let env = BallEnv::new();
 
         match *MODE {

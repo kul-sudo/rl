@@ -69,8 +69,8 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
     loop {
         env.reset();
 
-        let mut p_state = env.state_tensor(Perspective::Pursuer, device);
-        let mut t_state = env.state_tensor(Perspective::Target, device);
+        let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
+        let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
 
         let probs_sample = |logits: Tensor<B, 2>| {
             let gumbel_noise = logits
@@ -80,7 +80,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 .log()
                 .neg();
 
-            let sampled_indices = (logits + gumbel_noise).argmax(1);
+            let sampled_indices = (logits + gumbel_noise.clone()).argmax(1);
+
+            if gumbel_noise.contains_nan().into_scalar().to_bool() {
+                panic!();
+            }
 
             sampled_indices.into_scalar()
         };

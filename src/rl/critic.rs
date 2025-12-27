@@ -29,17 +29,17 @@ impl CriticConfig {
                 })
                 .init(device),
             ln2: LayerNormConfig::new(1024).init(device),
-            fc3: LinearConfig::new(1024, 1024)
+            fc3: LinearConfig::new(1024, 512)
                 .with_initializer(Initializer::KaimingNormal {
                     gain: SQRT_2,
                     fan_out_only: false,
                 })
                 .init(device),
-            ln3: LayerNormConfig::new(1024).init(device),
-            fc4: LinearConfig::new(1024, 1)
+            ln3: LayerNormConfig::new(512).init(device),
+            fc4: LinearConfig::new(512, 1)
                 .with_initializer(Initializer::Normal {
                     mean: 0.0,
-                    std: 0.003,
+                    std: 0.0003,
                 })
                 .init(device),
         }
@@ -60,15 +60,15 @@ pub struct Critic<B: Backend> {
 impl<B: Backend> Critic<B> {
     pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.fc1.forward(state);
-        // let x = self.ln1.forward(x);
+        let x = self.ln1.forward(x);
         let x = mish(x);
 
         let x = self.fc2.forward(x);
-        // let x = self.ln2.forward(x);
+        let x = self.ln2.forward(x);
         let x = mish(x);
 
         let x = self.fc3.forward(x);
-        // let x = self.ln3.forward(x);
+        let x = self.ln3.forward(x);
         let x = mish(x);
 
         self.fc4.forward(x)

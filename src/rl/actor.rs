@@ -26,17 +26,17 @@ impl ActorConfig {
                 })
                 .init(device),
             ln1: LayerNormConfig::new(1024).init(device),
-            fc2: LinearConfig::new(1024, 1024)
+            fc2: LinearConfig::new(1024, 512)
                 .with_initializer(Initializer::KaimingNormal {
                     gain: SQRT_2,
                     fan_out_only: false,
                 })
                 .init(device),
-            ln2: LayerNormConfig::new(1024).init(device),
-            fc3: LinearConfig::new(1024, self.act_dim)
+            ln2: LayerNormConfig::new(512).init(device),
+            fc3: LinearConfig::new(512, self.act_dim)
                 .with_initializer(Initializer::Normal {
                     mean: 0.0,
-                    std: 0.001,
+                    std: 0.0001,
                 })
                 .init(device),
         }
@@ -55,11 +55,11 @@ pub struct Actor<B: Backend> {
 impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.fc1.forward(x);
-        // let x = self.ln1.forward(x);
+        let x = self.ln1.forward(x);
         let x = mish(x);
 
         let x = self.fc2.forward(x);
-        // let x = self.ln2.forward(x);
+        let x = self.ln2.forward(x);
         let x = mish(x);
 
         self.fc3.forward(x)

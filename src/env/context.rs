@@ -16,11 +16,15 @@ use parry2d::{
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::{SQRT_2, TAU};
+use std::f32::consts::{FRAC_2_PI, SQRT_2, TAU};
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
-    fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2>;
+    fn state_tensor(
+        &mut self,
+        perspective: Perspective,
+        device: &B::Device,
+    ) -> (Tensor<B, 2>, bool);
     fn step_simultaneous(
         &mut self,
         p_action: B::IntElem,
@@ -103,7 +107,11 @@ impl<B: Backend> Env<B> for BallEnv {
         *self = Self::new();
     }
 
-    fn state_tensor(&mut self, perspective: Perspective, device: &B::Device) -> Tensor<B, 2> {
+    fn state_tensor(
+        &mut self,
+        perspective: Perspective,
+        device: &B::Device,
+    ) -> (Tensor<B, 2>, bool) {
         let direction = self.target.pos - self.pursuer.pos;
         let distance = direction.abs();
         let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
@@ -111,11 +119,11 @@ impl<B: Backend> Env<B> for BallEnv {
         let ray = Ray::new(origin, ray_dir);
 
         let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
-        let wall_covers = wall_hit.is_some_and(|hit| hit < distance);
+        let wall_blocks = wall_hit.is_some_and(|hit| hit < distance);
 
         match perspective {
             Perspective::Pursuer => {
-                let context = if wall_covers {
+                let context = if wall_blocks {
                     if self.pursuer.memory.is_none() {
                         self.pursuer.memory = Some(self.target.pos);
                     }
@@ -141,11 +149,11 @@ impl<B: Backend> Env<B> for BallEnv {
                         self.target.pos.im() - self.pursuer.pos.im(),
                     ]
                 };
-                Tensor::from_floats([context], device)
+                (Tensor::from_floats([context], device), wall_blocks)
             }
             Perspective::Target => {
                 let mut context = vec![
-                    wall_covers as u8 as f32,
+                    wall_blocks as u8 as f32,
                     self.target.pos.re(),
                     self.target.pos.im(),
                     self.pursuer.pos.re() - self.target.pos.re(),
@@ -192,7 +200,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 }
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
-                Tensor::from_floats([factors], device)
+                (Tensor::from_floats([factors], device), wall_blocks)
             }
         }
     }
@@ -204,56 +212,63 @@ impl<B: Backend> Env<B> for BallEnv {
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
-        let p_angle = TAU * p_action.to_u32() as f32 / N_DIRECTIONS as f32;
-        let t_angle = TAU * t_action.to_u32() as f32 / N_DIRECTIONS as f32;
+        if p_action.to_u32() != N_DIRECTIONS {
+            let p_angle = TAU * p_action.to_f32() / N_DIRECTIONS as f32;
+            advance(&mut self.pursuer.pos, p_angle, PURSUER_SPEED);
+        }
 
-        advance(&mut self.pursuer.pos, p_angle, PURSUER_SPEED);
-        advance(&mut self.target.pos, t_angle, TARGET_SPEED);
+        if t_action.to_u32() != N_DIRECTIONS {
+            let t_angle = TAU * t_action.to_f32() / N_DIRECTIONS as f32;
+            advance(&mut self.target.pos, t_angle, TARGET_SPEED);
+        }
 
         let collision = self.hits();
-
+        let expired = self.pursuer.time == PURSUER_TIME_CAP;
+        let total_speed = PURSUER_SPEED + TARGET_SPEED;
         let prev_distance = (initial.pursuer.pos - initial.target.pos).abs();
         let new_distance = (self.pursuer.pos - self.target.pos).abs();
-
-        self.pursuer.time += 1;
-
-        let total_speed = PURSUER_SPEED + TARGET_SPEED;
-        let expired = self.pursuer.time == PURSUER_TIME_CAP;
-
-        // Pursuer
         let distance_reward = (prev_distance - new_distance) / total_speed;
-        let p_reward = if collision {
-            5.0
-        } else if expired {
-            -5.0
-        } else {
-            distance_reward * (1.0 - self.pursuer.age())
-        };
-        dbg!(p_reward);
-        let p_done = collision || expired;
 
-        let p_step = Step::new(
-            self.state_tensor(Perspective::Pursuer, device),
-            p_reward,
-            p_done,
-        );
+        let p_step = {
+            let (state, _) = self.state_tensor(Perspective::Pursuer, device);
+
+            self.pursuer.time += 1;
+
+            let p_reward = if collision {
+                5.0
+            } else if expired {
+                -5.0
+            } else {
+                distance_reward * (1.0 - self.pursuer.age())
+            };
+            dbg!(p_reward);
+            let p_done = collision || expired;
+
+            Step::new(state, p_reward, p_done)
+        };
+
+        dbg!(distance_reward);
 
         // Target
-        let t_reward = if collision {
-            -5.0 * (1.0 - self.pursuer.age())
-        } else if expired {
-            5.0
-        } else {
-            -0.01
-        };
-        dbg!(t_reward);
-        let t_done = collision;
+        let t_step = {
+            let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
 
-        let t_step = Step::new(
-            self.state_tensor(Perspective::Target, device),
-            t_reward,
-            t_done,
-        );
+            let t_reward = if collision {
+                -5.0
+            } else if expired {
+                5.0
+            } else if wall_blocks {
+                0.5
+            } else if !wall_blocks && distance_reward > FRAC_2_PI {
+                -0.1
+            } else {
+                -0.01
+            };
+            dbg!(t_reward);
+            let t_done = collision;
+
+            Step::new(state, t_reward, t_done)
+        };
 
         (p_step, t_step)
     }
