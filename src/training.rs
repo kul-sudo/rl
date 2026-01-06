@@ -83,7 +83,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let sampled_indices = (logits + gumbel_noise.clone()).argmax(1);
 
             if gumbel_noise.contains_nan().into_scalar().to_bool() {
-                panic!();
+                panic!("gumbel");
             }
 
             sampled_indices.into_scalar()
@@ -114,7 +114,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
             let logits = actor.forward(state.clone());
             if logits.clone().contains_nan().into_scalar().to_bool() {
-                panic!();
+                panic!("logits");
             }
 
             let log_probs = log_softmax(logits.clone(), 1);

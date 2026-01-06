@@ -13,7 +13,7 @@ pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
         c32(0.2, 0.2),
         c32(0.6, 0.1),
         c32(0.7, 0.9),
-        c32(0.2, 0.2),
+        c32(0.2, 0.9),
     ];
 
     Compound::new(

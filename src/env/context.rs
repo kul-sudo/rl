@@ -16,7 +16,7 @@ use parry2d::{
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::{FRAC_2_PI, SQRT_2, TAU};
+use std::f32::consts::{SQRT_2, TAU};
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
@@ -224,10 +224,9 @@ impl<B: Backend> Env<B> for BallEnv {
 
         let collision = self.hits();
         let expired = self.pursuer.time == PURSUER_TIME_CAP;
-        let total_speed = PURSUER_SPEED + TARGET_SPEED;
         let prev_distance = (initial.pursuer.pos - initial.target.pos).abs();
         let new_distance = (self.pursuer.pos - self.target.pos).abs();
-        let distance_reward = (prev_distance - new_distance) / total_speed;
+        let distance_change = (prev_distance - new_distance) / (PURSUER_SPEED + TARGET_SPEED);
 
         let p_step = {
             let (state, _) = self.state_tensor(Perspective::Pursuer, device);
@@ -239,7 +238,7 @@ impl<B: Backend> Env<B> for BallEnv {
             } else if expired {
                 -5.0
             } else {
-                distance_reward * (1.0 - self.pursuer.age())
+                distance_change * (1.0 - self.pursuer.age())
             };
             dbg!(p_reward);
             let p_done = collision || expired;
@@ -247,7 +246,7 @@ impl<B: Backend> Env<B> for BallEnv {
             Step::new(state, p_reward, p_done)
         };
 
-        dbg!(distance_reward);
+        dbg!(distance_change);
 
         // Target
         let t_step = {
@@ -258,8 +257,8 @@ impl<B: Backend> Env<B> for BallEnv {
             } else if expired {
                 5.0
             } else if wall_blocks {
-                0.5
-            } else if !wall_blocks && distance_reward > FRAC_2_PI {
+                1.0
+            } else if distance_change > 0.0 {
                 -0.1
             } else {
                 -0.01
