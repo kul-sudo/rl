@@ -16,7 +16,7 @@ pub struct Derf<B: Backend> {
 }
 
 impl DerfConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Derf<B> {
+    pub fn init<B: Backend>(self, device: &B::Device) -> Derf<B> {
         Derf {
             alpha: Param::from_tensor(Tensor::ones([self.num_features], device)),
             shift: Param::from_tensor(Tensor::zeros([self.num_features], device)),

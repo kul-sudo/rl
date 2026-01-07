@@ -16,7 +16,7 @@ use burn::{
     prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        Distribution, ElementConversion, Tensor,
+        Distribution, Int, Tensor,
         activation::{log_softmax, softmax},
         backend::AutodiffBackend,
     },
@@ -86,7 +86,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 panic!("gumbel");
             }
 
-            sampled_indices.into_scalar()
+            sampled_indices
         };
 
         let update_agent = |actor: &mut Actor<B>,
@@ -95,9 +95,9 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                             critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
                             state: &mut Tensor<B, 2>,
                             step: &Step<B>,
-                            action: B::IntElem,
+                            action: Tensor<B, 2, Int>,
                             curiosity: f32| {
-            let reward_tensor = Tensor::from_floats([[step.reward]], device);
+            let reward_tensor = step.reward.clone().reshape([1, 1]);
             let value = critic.forward(state.clone());
             let next_value = if step.done {
                 Tensor::zeros([1, 1], device)
@@ -122,7 +122,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let entropy = -(probs.clone() * log_probs.clone()).sum_dim(1);
             let entropy_loss = entropy.mean();
 
-            let pick = log_probs.gather(1, Tensor::from_data([[action]], device));
+            let pick = log_probs.gather(1, action);
             let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
 
             let grads = actor_loss.backward();
@@ -140,12 +140,13 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             });
 
             let p_logits = pursuer.forward(p_state.clone());
-            let p_action = B::IntElem::from_elem(probs_sample(p_logits));
+            let p_action = probs_sample(p_logits);
 
             let t_logits = target.forward(t_state.clone());
-            let t_action = B::IntElem::from_elem(probs_sample(t_logits));
+            let t_action = probs_sample(t_logits);
 
-            let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
+            let (p_step, t_step) =
+                env.step_simultaneous(p_action.clone(), t_action.clone(), device);
 
             update_agent(
                 &mut pursuer,

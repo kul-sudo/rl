@@ -4,7 +4,7 @@ use crate::consts::*;
 use ::rand::{Rng, rng};
 use burn::{
     prelude::ToElement,
-    tensor::{Tensor, backend::Backend},
+    tensor::{Int, Tensor, backend::Backend, s},
 };
 use macroquad::prelude::*;
 use num::{
@@ -27,8 +27,8 @@ pub trait Env<B: Backend> {
     ) -> (Tensor<B, 2>, bool);
     fn step_simultaneous(
         &mut self,
-        p_action: B::IntElem,
-        t_action: B::IntElem,
+        p_action: Tensor<B, 2, Int>,
+        t_action: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>);
 }
@@ -81,7 +81,6 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
 #[derive(Clone, Debug)]
 pub struct Pursuer {
     pos: Complex32,
-    memory: Option<Complex32>,
     pub time: u32,
 }
 
@@ -124,25 +123,16 @@ impl<B: Backend> Env<B> for BallEnv {
         match perspective {
             Perspective::Pursuer => {
                 let context = if wall_blocks {
-                    if self.pursuer.memory.is_none() {
-                        self.pursuer.memory = Some(self.target.pos);
-                    }
-
                     let search = c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0));
 
                     [
-                        0.0,
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
                         self.target.pos.re() - search.re(),
                         self.target.pos.im() - search.im(),
-                        // self.target.pos.re() - self.pursuer.memory.unwrap().re(),
-                        // self.target.pos.im() - self.pursuer.memory.unwrap().im(),
                     ]
                 } else {
-                    self.pursuer.memory = None;
                     [
-                        1.0,
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
                         self.target.pos.re() - self.pursuer.pos.re(),
@@ -207,18 +197,22 @@ impl<B: Backend> Env<B> for BallEnv {
 
     fn step_simultaneous(
         &mut self,
-        p_action: B::IntElem,
-        t_action: B::IntElem,
+        p_action: Tensor<B, 2, Int>,
+        t_action: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
-        if p_action.to_u32() != N_DIRECTIONS {
-            let p_angle = TAU * p_action.to_f32() / N_DIRECTIONS as f32;
+
+        let p_action_scalar = p_action.into_scalar();
+        let t_action_scalar = t_action.into_scalar();
+
+        if p_action_scalar.to_u32() != N_DIRECTIONS {
+            let p_angle = TAU * p_action_scalar.to_f32() / N_DIRECTIONS as f32;
             advance(&mut self.pursuer.pos, p_angle, PURSUER_SPEED);
         }
 
-        if t_action.to_u32() != N_DIRECTIONS {
-            let t_angle = TAU * t_action.to_f32() / N_DIRECTIONS as f32;
+        if t_action_scalar.to_u32() != N_DIRECTIONS {
+            let t_angle = TAU * t_action_scalar.to_f32() / N_DIRECTIONS as f32;
             advance(&mut self.target.pos, t_angle, TARGET_SPEED);
         }
 
@@ -234,13 +228,13 @@ impl<B: Backend> Env<B> for BallEnv {
             self.pursuer.time += 1;
 
             let p_reward = if collision {
-                5.0
+                Tensor::full([1], 5.0, device)
             } else if expired {
-                -5.0
+                Tensor::full([1], -5.0, device)
             } else {
-                distance_change * (1.0 - self.pursuer.age())
+                Tensor::full([1], distance_change, device)
             };
-            dbg!(p_reward);
+
             let p_done = collision || expired;
 
             Step::new(state, p_reward, p_done)
@@ -252,18 +246,31 @@ impl<B: Backend> Env<B> for BallEnv {
         let t_step = {
             let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
 
-            let t_reward = if collision {
-                -5.0
+            let t_reward: Tensor<B, 1> = if collision {
+                Tensor::full([1], -5.0, device)
             } else if expired {
-                5.0
+                Tensor::full([1], 5.0, device)
             } else if wall_blocks {
-                1.0
-            } else if distance_change > 0.0 {
-                -0.1
+                Tensor::full([1], 1.0, device)
             } else {
-                -0.01
+                // 1. GPU Calculation: Get the last N_LASERS elements
+                let proximity_tensor = state.clone().slice(s![-(N_LASERS as isize)..]);
+                let proximity = proximity_tensor.clone().mean();
+                let proximity_val = proximity.clone().into_scalar();
+
+                // 2. CPU Calculation: Manually verify using the exact same slice
+                let state_vec = state.clone().into_data().to_vec().unwrap();
+                // Calculate the start index to match the GPU slice [-(N_LASERS)..]
+                let start_idx = state_vec.len() - N_LASERS;
+                let manual_slice = &state_vec[start_idx..];
+
+                let manual_mean = manual_slice.iter().sum::<f32>() / N_LASERS as f32;
+
+                dbg!(manual_mean, proximity_val);
+
+                -distance_change - proximity
             };
-            dbg!(t_reward);
+
             let t_done = collision;
 
             Step::new(state, t_reward, t_done)
@@ -287,7 +294,6 @@ impl BallEnv {
         Self {
             pursuer: Pursuer {
                 pos: valid_spawn(),
-                memory: None,
                 time: 0,
             },
             target: Target { pos: valid_spawn() },

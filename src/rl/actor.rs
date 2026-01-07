@@ -1,13 +1,15 @@
-use super::derf::{Derf, DerfConfig};
+use super::{
+    derf::{Derf, DerfConfig},
+    serf::serf,
+};
 use burn::{
     config::Config,
     module::{Initializer, Module},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, activation::mish, backend::Backend},
+    tensor::{Tensor, backend::Backend},
 };
 use std::f64::consts::SQRT_2;
 
-/// Configuration for the Actor network.
 #[derive(Config, Debug)]
 pub struct ActorConfig {
     pub obs_dim: usize,
@@ -15,7 +17,7 @@ pub struct ActorConfig {
 }
 
 impl ActorConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Actor<B> {
+    pub fn init<B: Backend>(self, device: &B::Device) -> Actor<B> {
         Actor {
             fc1: LinearConfig::new(self.obs_dim, 1024)
                 .with_initializer(Initializer::KaimingNormal {
@@ -34,7 +36,7 @@ impl ActorConfig {
             fc3: LinearConfig::new(512, self.act_dim)
                 .with_initializer(Initializer::Normal {
                     mean: 0.0,
-                    std: 0.0001,
+                    std: 0.01,
                 })
                 .init(device),
         }
@@ -54,11 +56,11 @@ impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);
-        let x = mish(x);
+        let x = serf(x);
 
         let x = self.fc2.forward(x);
         let x = self.derf2.forward(x);
-        let x = mish(x);
+        let x = serf(x);
 
         self.fc3.forward(x)
     }
