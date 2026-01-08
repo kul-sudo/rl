@@ -53,7 +53,7 @@ pub struct Actor<B: Backend> {
 }
 
 impl<B: Backend> Actor<B> {
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<B, 1>) -> Tensor<B, 1> {
         let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);
         let x = serf(x);

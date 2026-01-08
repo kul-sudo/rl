@@ -24,11 +24,11 @@ pub trait Env<B: Backend> {
         &mut self,
         perspective: Perspective,
         device: &B::Device,
-    ) -> (Tensor<B, 2>, bool);
+    ) -> (Tensor<B, 1>, bool);
     fn step_simultaneous(
         &mut self,
-        p_action: Tensor<B, 2, Int>,
-        t_action: Tensor<B, 2, Int>,
+        p_action: Tensor<B, 1, Int>,
+        t_action: Tensor<B, 1, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>);
 }
@@ -110,7 +110,7 @@ impl<B: Backend> Env<B> for BallEnv {
         &mut self,
         perspective: Perspective,
         device: &B::Device,
-    ) -> (Tensor<B, 2>, bool) {
+    ) -> (Tensor<B, 1>, bool) {
         let direction = self.target.pos - self.pursuer.pos;
         let distance = direction.abs();
         let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
@@ -139,7 +139,7 @@ impl<B: Backend> Env<B> for BallEnv {
                         self.target.pos.im() - self.pursuer.pos.im(),
                     ]
                 };
-                (Tensor::from_floats([context], device), wall_blocks)
+                (Tensor::from_data(context, device), wall_blocks)
             }
             Perspective::Target => {
                 let mut context = vec![
@@ -190,15 +190,15 @@ impl<B: Backend> Env<B> for BallEnv {
                 }
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
-                (Tensor::from_floats([factors], device), wall_blocks)
+                (Tensor::from_data(factors, device), wall_blocks)
             }
         }
     }
 
     fn step_simultaneous(
         &mut self,
-        p_action: Tensor<B, 2, Int>,
-        t_action: Tensor<B, 2, Int>,
+        p_action: Tensor<B, 1, Int>,
+        t_action: Tensor<B, 1, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
@@ -240,8 +240,6 @@ impl<B: Backend> Env<B> for BallEnv {
             Step::new(state, p_reward, p_done)
         };
 
-        dbg!(distance_change);
-
         // Target
         let t_step = {
             let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
@@ -253,22 +251,22 @@ impl<B: Backend> Env<B> for BallEnv {
             } else if wall_blocks {
                 Tensor::full([1], 1.0, device)
             } else {
-                // 1. GPU Calculation: Get the last N_LASERS elements
-                let proximity_tensor = state.clone().slice(s![-(N_LASERS as isize)..]);
-                let proximity = proximity_tensor.clone().mean();
-                let proximity_val = proximity.clone().into_scalar();
+                let proximity = state.clone().slice(s!(-(N_LASERS as i32)..)).max();
 
-                // 2. CPU Calculation: Manually verify using the exact same slice
-                let state_vec = state.clone().into_data().to_vec().unwrap();
-                // Calculate the start index to match the GPU slice [-(N_LASERS)..]
-                let start_idx = state_vec.len() - N_LASERS;
-                let manual_slice = &state_vec[start_idx..];
+                let base_reward = Tensor::full([1], -distance_change, device);
+                let penalty_reward = Tensor::full([1], -0.5, device);
 
-                let manual_mean = manual_slice.iter().sum::<f32>() / N_LASERS as f32;
+                let condition = proximity.greater_elem(0.9);
 
-                dbg!(manual_mean, proximity_val);
+                dbg!(
+                    base_reward
+                        .clone()
+                        .mask_where(condition.clone(), penalty_reward.clone())
+                        .into_data()
+                        .to_vec::<f32>()
+                );
 
-                -distance_change - proximity
+                base_reward.mask_where(condition, penalty_reward)
             };
 
             let t_done = collision;

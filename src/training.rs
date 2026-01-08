@@ -72,7 +72,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
         let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
 
-        let probs_sample = |logits: Tensor<B, 2>| {
+        let probs_sample = |logits: Tensor<B, 1>| {
             let gumbel_noise = logits
                 .random_like(Distribution::Uniform(1e-5, 1.0))
                 .log()
@@ -80,7 +80,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 .log()
                 .neg();
 
-            let sampled_indices = (logits + gumbel_noise.clone()).argmax(1);
+            let sampled_indices = (logits + gumbel_noise.clone()).argmax(0);
 
             if gumbel_noise.contains_nan().into_scalar().to_bool() {
                 panic!("gumbel");
@@ -93,18 +93,17 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                             critic: &mut Critic<B>,
                             actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
                             critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
-                            state: &mut Tensor<B, 2>,
+                            state: &mut Tensor<B, 1>,
                             step: &Step<B>,
-                            action: Tensor<B, 2, Int>,
+                            action: Tensor<B, 1, Int>,
                             curiosity: f32| {
-            let reward_tensor = step.reward.clone().reshape([1, 1]);
             let value = critic.forward(state.clone());
             let next_value = if step.done {
-                Tensor::zeros([1, 1], device)
+                Tensor::zeros([1], device)
             } else {
                 critic.forward(step.next_state.clone())
             };
-            let td_target: Tensor<B, 2> = reward_tensor + GAMMA * next_value.detach();
+            let td_target: Tensor<B, 1> = step.reward.clone() + GAMMA * next_value.detach();
             let advantage = td_target.clone() - value.clone();
 
             let critic_loss = MseLoss::new().forward(value, td_target, Reduction::Mean);
@@ -117,12 +116,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 panic!("logits");
             }
 
-            let log_probs = log_softmax(logits.clone(), 1);
-            let probs = softmax(logits, 1);
-            let entropy = -(probs.clone() * log_probs.clone()).sum_dim(1);
-            let entropy_loss = entropy.mean();
+            let log_probs = log_softmax(logits.clone(), 0);
+            let probs = softmax(logits, 0);
+            let entropy_loss = -(probs.clone() * log_probs.clone()).sum();
 
-            let pick = log_probs.gather(1, action);
+            let pick = log_probs.select(0, action);
             let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
 
             let grads = actor_loss.backward();

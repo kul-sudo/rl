@@ -4,9 +4,9 @@ use std::f32::consts::SQRT_2;
 // Parameters
 pub const GAMMA: f32 = 0.995;
 pub const N_DIRECTIONS: u32 = 23 + 1; // Last means not moving at all
-pub const CURIOSITY_DECAY: f32 = 0.99995;
+pub const CURIOSITY_DECAY: f32 = 0.9999;
 pub const CURIOSITY_DEFAULT: f32 = 1.0;
-pub const CURIOSITY_MIN: f32 = 0.3;
+pub const CURIOSITY_MIN: f32 = 0.1;
 
 // Pursuer
 pub const PURSUER_SPEED: f32 = 0.01;
