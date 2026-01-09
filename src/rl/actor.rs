@@ -6,7 +6,7 @@ use burn::{
     config::Config,
     module::{Initializer, Module},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, backend::Backend},
+    tensor::{Tensor, activation::sigmoid, backend::Backend},
 };
 use std::f64::consts::SQRT_2;
 
@@ -19,6 +19,7 @@ pub struct ActorConfig {
 impl ActorConfig {
     pub fn init<B: Backend>(self, device: &B::Device) -> Actor<B> {
         Actor {
+            gate: LinearConfig::new(self.obs_dim, self.obs_dim).init(device),
             fc1: LinearConfig::new(self.obs_dim, 1024)
                 .with_initializer(Initializer::KaimingNormal {
                     gain: SQRT_2,
@@ -45,6 +46,7 @@ impl ActorConfig {
 
 #[derive(Module, Debug)]
 pub struct Actor<B: Backend> {
+    gate: Linear<B>,
     fc1: Linear<B>,
     derf1: Derf<B>,
     fc2: Linear<B>,
@@ -54,6 +56,9 @@ pub struct Actor<B: Backend> {
 
 impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 1>) -> Tensor<B, 1> {
+        let mask = sigmoid(self.gate.forward(x.clone()));
+        let x = x * mask;
+
         let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);
         let x = serf(x);

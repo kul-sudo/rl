@@ -1,10 +1,11 @@
+use crate::env::walls::WALLS_POS;
 use num::complex::Complex32;
 use std::f32::consts::SQRT_2;
 
 // Parameters
-pub const GAMMA: f32 = 0.995;
+pub const GAMMA: f32 = 0.99;
 pub const N_DIRECTIONS: u32 = 23 + 1; // Last means not moving at all
-pub const CURIOSITY_DECAY: f32 = 0.9999;
+pub const CURIOSITY_DECAY: f32 = 0.99995;
 pub const CURIOSITY_DEFAULT: f32 = 1.0;
 pub const CURIOSITY_MIN: f32 = 0.1;
 
@@ -15,8 +16,8 @@ pub const PURSUER_FACTORS: usize = 4;
 
 // Target
 pub const TARGET_SPEED: f32 = SQRT_2 * PURSUER_SPEED;
-pub const N_LASERS: usize = 12;
-pub const TARGET_FACTORS: usize = 5 + N_LASERS;
+pub const N_LASERS: usize = 8;
+pub const TARGET_FACTORS: usize = 5 + N_LASERS + WALLS_POS.len() * 2;
 
 // pub const N_TARGETS: usize = 5;
 

@@ -7,6 +7,7 @@ use crate::render::utils::Data;
 use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
+    stochastic::gumbel_sample,
 };
 use burn::{
     grad_clipping::GradientClippingConfig,
@@ -54,13 +55,13 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
     // Critic optimizers
     let mut pc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-2)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut tc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-2)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -71,23 +72,6 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
         let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
         let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
-
-        let probs_sample = |logits: Tensor<B, 1>| {
-            let gumbel_noise = logits
-                .random_like(Distribution::Uniform(1e-5, 1.0))
-                .log()
-                .neg()
-                .log()
-                .neg();
-
-            let sampled_indices = (logits + gumbel_noise.clone()).argmax(0);
-
-            if gumbel_noise.contains_nan().into_scalar().to_bool() {
-                panic!("gumbel");
-            }
-
-            sampled_indices
-        };
 
         let update_agent = |actor: &mut Actor<B>,
                             critic: &mut Critic<B>,
@@ -138,10 +122,10 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             });
 
             let p_logits = pursuer.forward(p_state.clone());
-            let p_action = probs_sample(p_logits);
+            let p_action = gumbel_sample(p_logits);
 
             let t_logits = target.forward(t_state.clone());
-            let t_action = probs_sample(t_logits);
+            let t_action = gumbel_sample(t_logits);
 
             let (p_step, t_step) =
                 env.step_simultaneous(p_action.clone(), t_action.clone(), device);

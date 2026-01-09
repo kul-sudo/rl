@@ -1,47 +1,51 @@
-#![allow(warnings)]
-
 use crate::consts::*;
-use crate::env::context::Env;
+use crate::env::context::{Env, Perspective};
 use crate::render::utils::Data;
-use crate::rl::actor::{Actor, ActorConfig};
+use crate::rl::{
+    actor::{Actor, ActorConfig},
+    stochastic::gumbel_sample,
+};
 use burn::{module::Module, record::CompactRecorder, tensor::backend::Backend};
-use std::{path::Path, sync::mpsc::SyncSender};
+use std::{marker::PhantomData, path::Path, sync::mpsc::SyncSender};
 
 pub fn inference<B: Backend, E: Env<B> + Clone>(
     mut env: E,
     data_tx: &SyncSender<Data<B, E>>,
     device: &B::Device,
 ) {
-    // let actor_config = ActorConfig::new(FACTORS, N_DIRECTIONS as usize, 512);
-    // let mut actor: Actor<B> = actor_config.init(device);
-    //
-    // actor = actor
-    //     .load_file(
-    //         Path::new(ARTIFACT_DIR).join("actor"),
-    //         &CompactRecorder::new(),
-    //         device,
-    //     )
-    //     .unwrap();
-    //
-    // loop {
-    //     let mut state = env.reset(device);
-    //
-    //     loop {
-    //         let logits = actor.forward(state.clone());
-    //         let action = logits.argmax(1).into_scalar();
-    //
-    //         let step = env.step(action, device);
-    //         let _ = data_tx.send(Data {
-    //             env: env.clone(),
-    //             step: step.clone(),
-    //             epsilon: None,
-    //         });
-    //
-    //         if step.done {
-    //             break;
-    //         } else {
-    //             state = step.next_state;
-    //         }
-    //     }
-    // }
+    let recorder = CompactRecorder::new();
+
+    let pursuer: Actor<B> = ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize)
+        .init(device)
+        .load_file(Path::new(ARTIFACT_DIR).join("pursuer"), &recorder, device)
+        .expect("Failed to load pursuer.mpk");
+
+    let target: Actor<B> = ActorConfig::new(TARGET_FACTORS, N_DIRECTIONS as usize)
+        .init(device)
+        .load_file(Path::new(ARTIFACT_DIR).join("target"), &recorder, device)
+        .expect("Failed to load target.mpk");
+
+    loop {
+        env.reset();
+
+        loop {
+            let _ = data_tx.send(Data {
+                env: env.clone(),
+                curiosity: None,
+                _phantom: PhantomData,
+            });
+
+            let (p_state, _) = env.state_tensor(Perspective::Pursuer, device);
+            let (t_state, _) = env.state_tensor(Perspective::Target, device);
+
+            let p_action = gumbel_sample(pursuer.forward(p_state) / 1.5);
+            let t_action = gumbel_sample(target.forward(t_state) / 1.5);
+
+            let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
+
+            if p_step.done || t_step.done {
+                break;
+            }
+        }
+    }
 }

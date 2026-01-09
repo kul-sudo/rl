@@ -6,7 +6,7 @@ use burn::{
     config::Config,
     module::{Initializer, Module},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, backend::Backend},
+    tensor::{Tensor, activation::sigmoid, backend::Backend},
 };
 use std::f64::consts::SQRT_2;
 
@@ -18,6 +18,7 @@ pub struct CriticConfig {
 impl CriticConfig {
     pub fn init<B: Backend>(self, device: &B::Device) -> Critic<B> {
         Critic {
+            gate: LinearConfig::new(self.obs_dim, self.obs_dim).init(device),
             fc1: LinearConfig::new(self.obs_dim, 1024)
                 .with_initializer(Initializer::KaimingNormal {
                     gain: SQRT_2,
@@ -51,6 +52,7 @@ impl CriticConfig {
 
 #[derive(Module, Debug)]
 pub struct Critic<B: Backend> {
+    gate: Linear<B>,
     fc1: Linear<B>,
     derf1: Derf<B>,
     fc2: Linear<B>,
@@ -62,7 +64,10 @@ pub struct Critic<B: Backend> {
 
 impl<B: Backend> Critic<B> {
     pub fn forward(&self, state: Tensor<B, 1>) -> Tensor<B, 1> {
-        let x = self.fc1.forward(state);
+        let mask = sigmoid(self.gate.forward(state.clone()));
+        let x = state * mask;
+
+        let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);
         let x = serf(x);
 

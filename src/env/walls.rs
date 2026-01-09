@@ -7,23 +7,22 @@ use parry2d::{
 use std::sync::LazyLock;
 
 pub const WALL_SIZE: f32 = 0.05;
+pub static WALLS_POS: [Complex32; 5] = [
+    Complex32::new(0.2, 0.5),
+    Complex32::new(0.2, 0.2),
+    Complex32::new(0.6, 0.1),
+    Complex32::new(0.7, 0.9),
+    Complex32::new(0.2, 0.9),
+];
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
-    let positions = [
-        c32(0.2, 0.5),
-        c32(0.2, 0.2),
-        c32(0.6, 0.1),
-        c32(0.7, 0.9),
-        c32(0.2, 0.9),
-    ];
-
     Compound::new(
-        positions
+        WALLS_POS
             .into_iter()
             .map(|pos| {
                 let scaled = c32(pos.re(), pos.im());
                 (
                     Isometry::translation(scaled.re(), scaled.im()),
-                    SharedShape::cuboid(WALL_SIZE * 2.0, WALL_SIZE),
+                    SharedShape::cuboid(WALL_SIZE, WALL_SIZE),
                 )
             })
             .collect::<Vec<_>>(),
