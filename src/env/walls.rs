@@ -7,12 +7,13 @@ use parry2d::{
 use std::sync::LazyLock;
 
 pub const WALL_SIZE: f32 = 0.05;
-pub static WALLS_POS: [Complex32; 5] = [
+pub static WALLS_POS: [Complex32; 6] = [
     Complex32::new(0.2, 0.5),
     Complex32::new(0.2, 0.2),
     Complex32::new(0.6, 0.1),
     Complex32::new(0.7, 0.9),
-    Complex32::new(0.2, 0.9),
+    Complex32::new(0.8, 0.5),
+    Complex32::new(0.1, 0.9),
 ];
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
     Compound::new(

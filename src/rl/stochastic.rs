@@ -1,7 +1,4 @@
-use burn::{
-    prelude::ToElement,
-    tensor::{Distribution, Int, Tensor, backend::Backend},
-};
+use burn::tensor::{Distribution, Int, Tensor, backend::Backend};
 
 pub fn gumbel_sample<B: Backend>(logits: Tensor<B, 1>) -> Tensor<B, 1, Int> {
     let gumbel_noise = logits
@@ -11,11 +8,5 @@ pub fn gumbel_sample<B: Backend>(logits: Tensor<B, 1>) -> Tensor<B, 1, Int> {
         .log()
         .neg();
 
-    let sampled = (logits + gumbel_noise.clone()).argmax(0);
-
-    // if gumbel_noise.contains_nan().into_scalar().to_bool() {
-    //     panic!("gumbel");
-    // }
-
-    sampled
+    (logits + gumbel_noise.clone()).argmax(0)
 }

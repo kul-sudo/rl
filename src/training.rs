@@ -14,10 +14,9 @@ use burn::{
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        Distribution, Int, Tensor,
+        Int, Tensor,
         activation::{log_softmax, softmax},
         backend::AutodiffBackend,
     },
@@ -96,9 +95,9 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             *critic = critic_optimizer.step(3e-4, critic.clone(), grads_params);
 
             let logits = actor.forward(state.clone());
-            if logits.clone().contains_nan().into_scalar().to_bool() {
-                panic!("logits");
-            }
+            // if logits.clone().contains_nan().into_scalar().to_bool() {
+            //     panic!("logits");
+            // }
 
             let log_probs = log_softmax(logits.clone(), 0);
             let probs = softmax(logits, 0);

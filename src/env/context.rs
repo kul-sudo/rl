@@ -1,11 +1,10 @@
 use super::step::*;
 use super::walls::{WALLS, pos_invalid};
 use crate::consts::*;
-use crate::env::walls::WALLS_POS;
 use ::rand::{Rng, rng};
 use burn::{
     prelude::ToElement,
-    tensor::{Int, Tensor, TensorData, backend::Backend},
+    tensor::{Int, Tensor, backend::Backend},
 };
 use macroquad::prelude::*;
 use num::{
@@ -123,30 +122,36 @@ impl<B: Backend> Env<B> for BallEnv {
 
         match perspective {
             Perspective::Pursuer => {
-                let context = if wall_blocks {
+                let mut context = if wall_blocks {
                     let search = c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0));
 
-                    [
+                    vec![
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
                         self.target.pos.re() - search.re(),
                         self.target.pos.im() - search.im(),
                     ]
                 } else {
-                    [
+                    vec![
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
                         self.target.pos.re() - self.pursuer.pos.re(),
                         self.target.pos.im() - self.pursuer.pos.im(),
                     ]
                 };
-                (Tensor::from_data(context, device), wall_blocks)
+
+                let lasers = self.lasers(true, self.pursuer.pos);
+                context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
+
+                let factors: [f32; PURSUER_FACTORS] = context.try_into().unwrap();
+                (Tensor::from_data(factors, device), wall_blocks)
             }
             Perspective::Target => {
-                let wall_signal = (1.0 / 12.0 as f32).sqrt() * wall_blocks as u8 as f32;
+                let wall_signal = (1.0 / 12.0).sqrt() * wall_blocks as u8 as f32;
 
                 let mut context = vec![
                     wall_signal,
+                    self.pursuer.age(),
                     self.target.pos.re(),
                     self.target.pos.im(),
                     self.pursuer.pos.re() - self.target.pos.re(),
@@ -154,10 +159,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 ];
 
                 let lasers = self.lasers(true, self.target.pos);
-                context.extend_from_slice(&lasers);
-                for pos in WALLS_POS {
-                    context.extend_from_slice(&[pos.re(), pos.im()]);
-                }
+                context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
                 (Tensor::from_data(factors, device), wall_blocks)
@@ -222,25 +224,19 @@ impl<B: Backend> Env<B> for BallEnv {
                 Tensor::full([1], 1.0, device)
             } else {
                 let lasers = self.lasers(false, self.target.pos);
-                let proximity =
-                    Tensor::<B, 1>::from_data(TensorData::from(lasers.as_slice()), device).max();
+                let closest = 1.0
+                    - lasers
+                        .iter()
+                        .map(|laser| laser.abs())
+                        .min_by(|a, b| a.total_cmp(b))
+                        .unwrap();
+
+                let proximity = Tensor::<B, 1>::full([1], closest, device);
 
                 let base_reward = Tensor::full([1], -distance_change, device);
                 let penalty_reward = Tensor::full([1], -1.0, device);
 
-                dbg!(1.0 - (-3.0).exp());
-
                 let condition = proximity.clone().greater_elem(1.0 - (-3.0).exp());
-
-                dbg!(
-                    proximity.into_data().to_vec::<f32>(),
-                    base_reward
-                        .clone()
-                        .mask_where(condition.clone(), penalty_reward.clone())
-                        .into_data()
-                        .to_vec::<f32>()
-                );
-
                 base_reward.mask_where(condition, penalty_reward)
             };
 
@@ -273,7 +269,7 @@ impl BallEnv {
         }
     }
 
-    fn lasers(&self, walls: bool, origin: Complex32) -> Vec<f32> {
+    fn lasers(&self, walls: bool, origin: Complex32) -> Vec<Complex32> {
         let origin = Point::new(origin.re(), origin.im());
 
         let mut lasers = Vec::with_capacity(N_LASERS);
@@ -283,13 +279,12 @@ impl BallEnv {
             let dir = Vector::new(angle.cos(), angle.sin());
             let ray = Ray::new(origin, dir);
 
-            let laser_hit = if walls {
+            let toi = if walls {
                 WALLS.cast_ray(&Isometry::identity(), &ray, SQRT_2, true)
             } else {
                 None
-            };
-
-            let laser_distance = laser_hit.unwrap_or_else(|| {
+            }
+            .unwrap_or_else(|| {
                 let cos = angle.cos();
                 let sin = angle.sin();
 
@@ -309,12 +304,12 @@ impl BallEnv {
                     f32::INFINITY
                 };
 
-                vertical.min(horizontal).min(SQRT_2)
+                vertical.min(horizontal)
             });
 
-            let proximity = 1.0 - laser_distance / SQRT_2;
+            let relative = c32(dir.x * toi, dir.y * toi);
 
-            lasers.push(proximity);
+            lasers.push(relative);
         }
 
         lasers
