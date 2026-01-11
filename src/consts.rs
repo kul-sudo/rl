@@ -10,12 +10,12 @@ pub const CURIOSITY_MIN: f32 = 0.1;
 
 // Pursuer
 pub const PURSUER_SPEED: f32 = 0.01;
-pub const PURSUER_TIME_CAP: u32 = 1500;
+pub const PURSUER_TIME_CAP: u32 = 1000;
 pub const PURSUER_FACTORS: usize = 4 + N_LASERS * 2;
 
 // Target
 pub const TARGET_SPEED: f32 = SQRT_2 * PURSUER_SPEED;
-pub const N_LASERS: usize = 24;
+pub const N_LASERS: usize = 32;
 pub const TARGET_FACTORS: usize = 6 + N_LASERS * 2;
 
 // pub const N_TARGETS: usize = 5;

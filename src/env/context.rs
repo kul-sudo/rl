@@ -123,14 +123,7 @@ impl<B: Backend> Env<B> for BallEnv {
         match perspective {
             Perspective::Pursuer => {
                 let mut context = if wall_blocks {
-                    let search = c32(rng().random_range(0.0..=1.0), rng().random_range(0.0..=1.0));
-
-                    vec![
-                        self.pursuer.pos.re(),
-                        self.pursuer.pos.im(),
-                        self.target.pos.re() - search.re(),
-                        self.target.pos.im() - search.im(),
-                    ]
+                    vec![self.pursuer.pos.re(), self.pursuer.pos.im(), -1.0, -1.0]
                 } else {
                     vec![
                         self.pursuer.pos.re(),
@@ -276,7 +269,8 @@ impl BallEnv {
 
         for i in 0..N_LASERS {
             let angle = (i as f32) * TAU / N_LASERS as f32;
-            let dir = Vector::new(angle.cos(), angle.sin());
+            let (sin, cos) = angle.sin_cos();
+            let dir = Vector::new(cos, sin);
             let ray = Ray::new(origin, dir);
 
             let toi = if walls {
@@ -285,9 +279,6 @@ impl BallEnv {
                 None
             }
             .unwrap_or_else(|| {
-                let cos = angle.cos();
-                let sin = angle.sin();
-
                 let vertical = if cos > 0.0 {
                     (1.0 - origin.x) / cos
                 } else if cos < 0.0 {
@@ -304,10 +295,13 @@ impl BallEnv {
                     f32::INFINITY
                 };
 
+                // Using the Pythagorean identity, we can derive that both sine and cosine can't be
+                // zero.
                 vertical.min(horizontal)
             });
 
-            let relative = c32(dir.x * toi, dir.y * toi);
+            let normalized = toi / SQRT_2;
+            let relative = c32(dir.x * normalized, dir.y * normalized);
 
             lasers.push(relative);
         }
