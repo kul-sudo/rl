@@ -63,15 +63,6 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
                 *pos += movement;
             }
         }
-
-        // match WALLS.cast_ray_and_get_normal(&Isometry::identity(), &ray, speed, true) {
-        //     Some(hit) => {
-        //         *pos += Complex32::from_polar(hit.time_of_impact, angle);
-        //     }
-        //     None => {
-        //         *pos += movement;
-        //     }
-        // }
     }
 
     pos.re = pos.re().clamp(1e-8, 1.0 - 1e-8);
@@ -111,14 +102,7 @@ impl<B: Backend> Env<B> for BallEnv {
         perspective: Perspective,
         device: &B::Device,
     ) -> (Tensor<B, 2>, bool) {
-        let direction = self.target.pos - self.pursuer.pos;
-        let distance = direction.abs();
-        let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
-        let origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
-        let ray = Ray::new(origin, ray_dir);
-
-        let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
-        let wall_blocks = wall_hit.is_some_and(|hit| hit < distance);
+        let wall_blocks = self.wall_blocks();
 
         match perspective {
             Perspective::Pursuer => {
@@ -138,7 +122,7 @@ impl<B: Backend> Env<B> for BallEnv {
 
                 let factors: [f32; PURSUER_FACTORS] = context.try_into().unwrap();
                 (
-                    Tensor::<B, 1>::from_data(factors, device).unsqueeze(),
+                    Tensor::<B, 1>::from_data(factors, device).reshape([1, PURSUER_FACTORS]),
                     wall_blocks,
                 )
             }
@@ -159,7 +143,7 @@ impl<B: Backend> Env<B> for BallEnv {
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
                 (
-                    Tensor::<B, 1>::from_data(factors, device).unsqueeze(),
+                    Tensor::<B, 1>::from_data(factors, device).reshape([1, TARGET_FACTORS]),
                     wall_blocks,
                 )
             }
@@ -219,7 +203,8 @@ impl<B: Backend> Env<B> for BallEnv {
             } else if expired {
                 Tensor::full([1, 1], 5.0, device)
             } else if wall_blocks {
-                Tensor::full([1, 1], 1.0, device)
+                let wall_already_blocks = initial.wall_blocks();
+                Tensor::full([1, 1], if wall_already_blocks { 1.0 } else { 4.0 }, device)
             } else {
                 let lasers = self.lasers(false, self.target.pos);
                 let closest = 1.0
@@ -264,6 +249,18 @@ impl BallEnv {
             },
             target: Target { pos: valid_spawn() },
         }
+    }
+
+    fn wall_blocks(&self) -> bool {
+        let direction = self.target.pos - self.pursuer.pos;
+        let distance = direction.abs();
+        let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
+        let origin = Point::new(self.pursuer.pos.re(), self.pursuer.pos.im());
+        let ray = Ray::new(origin, ray_dir);
+
+        let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
+        let wall_blocks = wall_hit.is_some_and(|hit| hit < distance);
+        wall_blocks
     }
 
     fn lasers(&self, walls: bool, origin: Complex32) -> Vec<Complex32> {

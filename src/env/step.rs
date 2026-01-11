@@ -1,18 +1,18 @@
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{Bool, Tensor, backend::Backend};
 
 #[derive(Clone, Debug)]
 pub struct Step<B: Backend> {
-    pub next_states: Tensor<B, 2>,
-    pub rewards: Tensor<B, 2>,
-    pub dones: Tensor<B, 2>,
+    pub next_state: Tensor<B, 2>,
+    pub reward: Tensor<B, 2>,
+    pub done: Tensor<B, 2, Bool>,
 }
 
 impl<B: Backend> Step<B> {
-    pub fn new(next_states: Tensor<B, 2>, rewards: Tensor<B, 2>, dones: Tensor<B, 2>) -> Self {
+    pub fn new(next_state: Tensor<B, 2>, reward: Tensor<B, 2>, done: Tensor<B, 2, Bool>) -> Self {
         Self {
-            next_states,
-            rewards,
-            dones,
+            next_state,
+            reward,
+            done,
         }
     }
 }

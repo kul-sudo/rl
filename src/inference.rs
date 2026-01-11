@@ -43,8 +43,8 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
 
             let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
 
-            if p_step.dones.clone().any().into_scalar().to_bool()
-                || t_step.dones.clone().any().into_scalar().to_bool()
+            if p_step.done.clone().any().into_scalar().to_bool()
+                || t_step.done.clone().any().into_scalar().to_bool()
             {
                 break;
             }

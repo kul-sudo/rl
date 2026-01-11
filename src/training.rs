@@ -80,8 +80,10 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
         let values = critic.forward(states.clone());
         let next_values = critic.forward(next_states).detach();
-        let td_target = rewards + (next_values * (dones.neg() + 1.0) * GAMMA);
-        let advantage = td_target.clone() - values.clone();
+        let mask = next_values.mask_fill(dones, 0.0);
+        let td_target = rewards + (mask * GAMMA);
+
+        let advantage = (td_target.clone() - values.clone()).detach();
 
         let critic_loss = MseLoss::new().forward(values, td_target, Reduction::Mean);
         *critic = critic_optimizer.step(
@@ -96,7 +98,7 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
         let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
         let pick = log_probs.gather(1, actions);
-        let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
+        let actor_loss = -(pick * advantage).mean() - curiosity * entropy_loss;
 
         *actor = actor_optimizer.step(
             1e-4,
@@ -125,11 +127,11 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
             let (p_step, t_step) =
                 env.step_simultaneous(p_action.clone(), t_action.clone(), device);
 
-            p_rollout.push(p_state.clone(), p_action, p_step.clone());
-            t_rollout.push(t_state.clone(), t_action, t_step.clone());
+            p_rollout.push(p_state, p_action, p_step.clone());
+            t_rollout.push(t_state, t_action, t_step.clone());
 
-            p_state = p_step.next_states.clone();
-            t_state = t_step.next_states.clone();
+            p_state = p_step.next_state;
+            t_state = t_step.next_state;
 
             if p_rollout.states.len() >= BATCH_SIZE {
                 update_agent(
@@ -155,8 +157,8 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
             *curiosity = (*curiosity * CURIOSITY_DECAY).max(CURIOSITY_MIN);
 
-            if p_step.dones.clone().any().into_scalar().to_bool()
-                || t_step.dones.clone().any().into_scalar().to_bool()
+            if p_step.done.clone().any().into_scalar().to_bool()
+                || t_step.done.clone().any().into_scalar().to_bool()
             {
                 break;
             }
