@@ -24,11 +24,11 @@ pub trait Env<B: Backend> {
         &mut self,
         perspective: Perspective,
         device: &B::Device,
-    ) -> (Tensor<B, 1>, bool);
+    ) -> (Tensor<B, 2>, bool);
     fn step_simultaneous(
         &mut self,
-        p_action: Tensor<B, 1, Int>,
-        t_action: Tensor<B, 1, Int>,
+        p_action: Tensor<B, 2, Int>,
+        t_action: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>);
 }
@@ -110,7 +110,7 @@ impl<B: Backend> Env<B> for BallEnv {
         &mut self,
         perspective: Perspective,
         device: &B::Device,
-    ) -> (Tensor<B, 1>, bool) {
+    ) -> (Tensor<B, 2>, bool) {
         let direction = self.target.pos - self.pursuer.pos;
         let distance = direction.abs();
         let ray_dir = Vector::new(direction.re(), direction.im()).normalize();
@@ -137,7 +137,10 @@ impl<B: Backend> Env<B> for BallEnv {
                 context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
 
                 let factors: [f32; PURSUER_FACTORS] = context.try_into().unwrap();
-                (Tensor::from_data(factors, device), wall_blocks)
+                (
+                    Tensor::<B, 1>::from_data(factors, device).unsqueeze(),
+                    wall_blocks,
+                )
             }
             Perspective::Target => {
                 let wall_signal = (1.0 / 12.0).sqrt() * wall_blocks as u8 as f32;
@@ -155,15 +158,18 @@ impl<B: Backend> Env<B> for BallEnv {
                 context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
-                (Tensor::from_data(factors, device), wall_blocks)
+                (
+                    Tensor::<B, 1>::from_data(factors, device).unsqueeze(),
+                    wall_blocks,
+                )
             }
         }
     }
 
     fn step_simultaneous(
         &mut self,
-        p_action: Tensor<B, 1, Int>,
-        t_action: Tensor<B, 1, Int>,
+        p_action: Tensor<B, 2, Int>,
+        t_action: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> (Step<B>, Step<B>) {
         let initial = self.clone();
@@ -193,15 +199,14 @@ impl<B: Backend> Env<B> for BallEnv {
             self.pursuer.time += 1;
 
             let p_reward = if collision {
-                Tensor::full([1], 5.0, device)
+                Tensor::full([1, 1], 5.0, device)
             } else if expired {
-                Tensor::full([1], -5.0, device)
+                Tensor::full([1, 1], -5.0, device)
             } else {
-                Tensor::full([1], distance_change, device)
+                Tensor::full([1, 1], distance_change, device)
             };
 
-            let p_done = collision || expired;
-
+            let p_done = Tensor::full([1, 1], collision || expired, device);
             Step::new(state, p_reward, p_done)
         };
 
@@ -209,12 +214,12 @@ impl<B: Backend> Env<B> for BallEnv {
         let t_step = {
             let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
 
-            let t_reward: Tensor<B, 1> = if collision {
-                Tensor::full([1], -5.0, device)
+            let t_reward = if collision {
+                Tensor::full([1, 1], -5.0, device)
             } else if expired {
-                Tensor::full([1], 5.0, device)
+                Tensor::full([1, 1], 5.0, device)
             } else if wall_blocks {
-                Tensor::full([1], 1.0, device)
+                Tensor::full([1, 1], 1.0, device)
             } else {
                 let lasers = self.lasers(false, self.target.pos);
                 let closest = 1.0
@@ -224,17 +229,16 @@ impl<B: Backend> Env<B> for BallEnv {
                         .min_by(|a, b| a.total_cmp(b))
                         .unwrap();
 
-                let proximity = Tensor::<B, 1>::full([1], closest, device);
+                let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
 
-                let base_reward = Tensor::full([1], -distance_change, device);
-                let penalty_reward = Tensor::full([1], -1.0, device);
+                let base_reward = Tensor::full([1, 1], -distance_change, device);
+                let penalty_reward = Tensor::full([1, 1], -1.0, device);
 
                 let condition = proximity.clone().greater_elem(1.0 - (-3.0).exp());
                 base_reward.mask_where(condition, penalty_reward)
             };
 
-            let t_done = collision;
-
+            let t_done = Tensor::full([1, 1], collision, device);
             Step::new(state, t_reward, t_done)
         };
 

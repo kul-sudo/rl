@@ -55,7 +55,7 @@ pub struct Actor<B: Backend> {
 }
 
 impl<B: Backend> Actor<B> {
-    pub fn forward(&self, x: Tensor<B, 1>) -> Tensor<B, 1> {
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let mask = sigmoid(self.gate.forward(x.clone()));
         let x = x * mask;
 

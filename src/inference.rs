@@ -5,7 +5,7 @@ use crate::rl::{
     actor::{Actor, ActorConfig},
     stochastic::gumbel_sample,
 };
-use burn::{module::Module, record::CompactRecorder, tensor::backend::Backend};
+use burn::{module::Module, prelude::ToElement, record::CompactRecorder, tensor::backend::Backend};
 use std::{marker::PhantomData, path::Path, sync::mpsc::SyncSender};
 
 pub fn inference<B: Backend, E: Env<B> + Clone>(
@@ -43,7 +43,9 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
 
             let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
 
-            if p_step.done || t_step.done {
+            if p_step.dones.clone().any().into_scalar().to_bool()
+                || t_step.dones.clone().any().into_scalar().to_bool()
+            {
                 break;
             }
         }

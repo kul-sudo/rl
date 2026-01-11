@@ -63,7 +63,7 @@ pub struct Critic<B: Backend> {
 }
 
 impl<B: Backend> Critic<B> {
-    pub fn forward(&self, state: Tensor<B, 1>) -> Tensor<B, 1> {
+    pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
         let mask = sigmoid(self.gate.forward(state.clone()));
         let x = state * mask;
 

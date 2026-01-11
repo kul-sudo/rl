@@ -1,7 +1,7 @@
 use crate::consts::*;
 use crate::env::{
+    batch::BatchCollector,
     context::{Env, Perspective},
-    step::Step,
 };
 use crate::render::utils::Data;
 use crate::rl::{
@@ -14,9 +14,10 @@ use burn::{
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        Int, Tensor,
+        Tensor,
         activation::{log_softmax, softmax},
         backend::AutodiffBackend,
     },
@@ -65,53 +66,51 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         .init();
 
     let mut checkpoint_timer = Instant::now();
+    let update_agent = |actor: &mut Actor<B>,
+                        critic: &mut Critic<B>,
+                        actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
+                        critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
+                        rollout: BatchCollector<B>,
+                        curiosity: f32| {
+        let states = Tensor::cat(rollout.states, 0);
+        let actions = Tensor::cat(rollout.actions, 0);
+        let rewards = Tensor::cat(rollout.rewards, 0);
+        let next_states = Tensor::cat(rollout.next_states, 0);
+        let dones = Tensor::cat(rollout.dones, 0);
+
+        let values = critic.forward(states.clone());
+        let next_values = critic.forward(next_states).detach();
+        let td_target = rewards + (next_values * (dones.neg() + 1.0) * GAMMA);
+        let advantage = td_target.clone() - values.clone();
+
+        let critic_loss = MseLoss::new().forward(values, td_target, Reduction::Mean);
+        *critic = critic_optimizer.step(
+            3e-4,
+            critic.clone(),
+            GradientsParams::from_grads(critic_loss.backward(), critic),
+        );
+
+        let logits = actor.forward(states);
+        let log_probs = log_softmax(logits.clone(), 1);
+        let probs = softmax(logits, 1);
+
+        let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
+        let pick = log_probs.gather(1, actions);
+        let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
+
+        *actor = actor_optimizer.step(
+            1e-4,
+            actor.clone(),
+            GradientsParams::from_grads(actor_loss.backward(), actor),
+        );
+    };
 
     loop {
         env.reset();
-
+        let mut p_rollout = BatchCollector::new(BATCH_SIZE);
+        let mut t_rollout = BatchCollector::new(BATCH_SIZE);
         let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
         let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
-
-        let update_agent = |actor: &mut Actor<B>,
-                            critic: &mut Critic<B>,
-                            actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
-                            critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
-                            state: &mut Tensor<B, 1>,
-                            step: &Step<B>,
-                            action: Tensor<B, 1, Int>,
-                            curiosity: f32| {
-            let value = critic.forward(state.clone());
-            let next_value = if step.done {
-                Tensor::zeros([1], device)
-            } else {
-                critic.forward(step.next_state.clone())
-            };
-            let td_target: Tensor<B, 1> = step.reward.clone() + GAMMA * next_value.detach();
-            let advantage = td_target.clone() - value.clone();
-
-            let critic_loss = MseLoss::new().forward(value, td_target, Reduction::Mean);
-            let grads = critic_loss.backward();
-            let grads_params = GradientsParams::from_grads(grads, critic);
-            *critic = critic_optimizer.step(3e-4, critic.clone(), grads_params);
-
-            let logits = actor.forward(state.clone());
-            // if logits.clone().contains_nan().into_scalar().to_bool() {
-            //     panic!("logits");
-            // }
-
-            let log_probs = log_softmax(logits.clone(), 0);
-            let probs = softmax(logits, 0);
-            let entropy_loss = -(probs.clone() * log_probs.clone()).sum();
-
-            let pick = log_probs.select(0, action);
-            let actor_loss = -(pick * advantage.detach()).mean() - curiosity * entropy_loss;
-
-            let grads = actor_loss.backward();
-            let grads_params = GradientsParams::from_grads(grads, actor);
-            *actor = actor_optimizer.step(1e-4, actor.clone(), grads_params);
-
-            *state = step.next_state.clone();
-        };
 
         loop {
             let _ = data_tx.send(Data {
@@ -120,40 +119,45 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                 _phantom: PhantomData,
             });
 
-            let p_logits = pursuer.forward(p_state.clone());
-            let p_action = gumbel_sample(p_logits);
-
-            let t_logits = target.forward(t_state.clone());
-            let t_action = gumbel_sample(t_logits);
+            let p_action = gumbel_sample(pursuer.forward(p_state.clone()));
+            let t_action = gumbel_sample(target.forward(t_state.clone()));
 
             let (p_step, t_step) =
                 env.step_simultaneous(p_action.clone(), t_action.clone(), device);
 
-            update_agent(
-                &mut pursuer,
-                &mut p_critic,
-                &mut p_optimizer,
-                &mut pc_optimizer,
-                &mut p_state,
-                &p_step,
-                p_action,
-                *curiosity,
-            );
+            p_rollout.push(p_state.clone(), p_action, p_step.clone());
+            t_rollout.push(t_state.clone(), t_action, t_step.clone());
 
-            update_agent(
-                &mut target,
-                &mut t_critic,
-                &mut t_optimizer,
-                &mut tc_optimizer,
-                &mut t_state,
-                &t_step,
-                t_action,
-                *curiosity,
-            );
+            p_state = p_step.next_states.clone();
+            t_state = t_step.next_states.clone();
+
+            if p_rollout.states.len() >= BATCH_SIZE {
+                update_agent(
+                    &mut pursuer,
+                    &mut p_critic,
+                    &mut p_optimizer,
+                    &mut pc_optimizer,
+                    p_rollout,
+                    *curiosity,
+                );
+                update_agent(
+                    &mut target,
+                    &mut t_critic,
+                    &mut t_optimizer,
+                    &mut tc_optimizer,
+                    t_rollout,
+                    *curiosity,
+                );
+
+                p_rollout = BatchCollector::new(BATCH_SIZE);
+                t_rollout = BatchCollector::new(BATCH_SIZE);
+            }
 
             *curiosity = (*curiosity * CURIOSITY_DECAY).max(CURIOSITY_MIN);
 
-            if p_step.done || t_step.done {
+            if p_step.dones.clone().any().into_scalar().to_bool()
+                || t_step.dones.clone().any().into_scalar().to_bool()
+            {
                 break;
             }
         }

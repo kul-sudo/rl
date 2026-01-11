@@ -25,9 +25,9 @@ impl DerfConfig {
 }
 
 impl<B: Backend> Derf<B> {
-    pub fn forward(&self, x: Tensor<B, 1>) -> Tensor<B, 1> {
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         let alpha = self.alpha.val();
         let shift = self.shift.val();
-        (x * alpha + shift).erf()
+        (x * alpha.unsqueeze() + shift.unsqueeze()).erf()
     }
 }

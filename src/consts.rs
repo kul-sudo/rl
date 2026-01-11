@@ -2,6 +2,7 @@ use num::complex::Complex32;
 use std::f32::consts::SQRT_2;
 
 // Parameters
+pub const BATCH_SIZE: usize = 64;
 pub const GAMMA: f32 = 0.99;
 pub const N_DIRECTIONS: u32 = 23 + 1; // Last means not moving at all
 pub const CURIOSITY_DECAY: f32 = 0.99995;

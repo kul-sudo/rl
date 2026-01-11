@@ -1,19 +1,18 @@
 use burn::tensor::{Tensor, backend::Backend};
-use macroquad::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct Step<B: Backend> {
-    pub next_state: Tensor<B, 1>,
-    pub reward: Tensor<B, 1>,
-    pub done: bool,
+    pub next_states: Tensor<B, 2>,
+    pub rewards: Tensor<B, 2>,
+    pub dones: Tensor<B, 2>,
 }
 
 impl<B: Backend> Step<B> {
-    pub fn new(next_state: Tensor<B, 1>, reward: Tensor<B, 1>, done: bool) -> Self {
+    pub fn new(next_states: Tensor<B, 2>, rewards: Tensor<B, 2>, dones: Tensor<B, 2>) -> Self {
         Self {
-            next_state,
-            reward,
-            done,
+            next_states,
+            rewards,
+            dones,
         }
     }
 }
