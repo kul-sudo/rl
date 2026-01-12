@@ -16,11 +16,7 @@ use burn::{
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::ToElement,
     record::CompactRecorder,
-    tensor::{
-        Tensor,
-        activation::{log_softmax, softmax},
-        backend::AutodiffBackend,
-    },
+    tensor::{Tensor, activation::log_softmax, backend::AutodiffBackend},
 };
 use macroquad::prelude::*;
 use std::{
@@ -55,13 +51,13 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
     // Critic optimizers
     let mut pc_optimizer = AdamWConfig::new()
-        .with_cautious_weight_decay(true)
-        .with_weight_decay(1e-2)
+        // .with_cautious_weight_decay(true)
+        // .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut tc_optimizer = AdamWConfig::new()
-        .with_cautious_weight_decay(true)
-        .with_weight_decay(1e-2)
+        // .with_cautious_weight_decay(true)
+        // .with_weight_decay(1e-2)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -74,18 +70,21 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
                         curiosity: f32| {
         let states = Tensor::cat(rollout.states, 0);
         let actions = Tensor::cat(rollout.actions, 0);
-        let rewards = Tensor::cat(rollout.rewards, 0);
+        let raw_rewards = Tensor::cat(rollout.rewards, 0);
         let next_states = Tensor::cat(rollout.next_states, 0);
         let dones = Tensor::cat(rollout.dones, 0);
+
+        let (var, mean) = raw_rewards.clone().var_mean(0);
+        let std = var.sqrt().add_scalar(1e-8);
+        let rewards = (raw_rewards - mean) / std;
 
         let values = critic.forward(states.clone());
         let next_values = critic.forward(next_states).detach();
         let mask = next_values.mask_fill(dones, 0.0);
         let td_target = rewards + (mask * GAMMA);
 
-        let advantage = (td_target.clone() - values.clone()).detach();
-
-        let critic_loss = MseLoss::new().forward(values, td_target, Reduction::Mean);
+        let critic_loss =
+            MseLoss::new().forward(values.clone(), td_target.clone(), Reduction::Mean);
         *critic = critic_optimizer.step(
             3e-4,
             critic.clone(),
@@ -94,11 +93,17 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
 
         let logits = actor.forward(states);
         let log_probs = log_softmax(logits.clone(), 1);
-        let probs = softmax(logits, 1);
+        let probs = log_probs.clone().exp();
 
         let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
         let pick = log_probs.gather(1, actions);
-        let actor_loss = -(pick * advantage).mean() - curiosity * entropy_loss;
+
+        let advantage = (td_target - values).detach();
+        let (variance, mean) = advantage.clone().var_mean(0);
+        let std = variance.sqrt().add_scalar(1e-8);
+        let advantage_norm = (advantage - mean) / std;
+
+        let actor_loss = -(pick * advantage_norm).mean() - curiosity * entropy_loss;
 
         *actor = actor_optimizer.step(
             1e-4,

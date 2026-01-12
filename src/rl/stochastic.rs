@@ -8,5 +8,5 @@ pub fn gumbel_sample<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 2, Int> {
         .log()
         .neg();
 
-    (logits + gumbel_noise.clone()).argmax(1)
+    (logits + gumbel_noise).argmax(1)
 }

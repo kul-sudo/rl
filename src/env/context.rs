@@ -73,6 +73,7 @@ fn advance(pos: &mut Complex32, angle: f32, speed: f32) {
 pub struct Pursuer {
     pos: Complex32,
     pub time: u32,
+    memory: Option<Complex32>,
 }
 
 impl Pursuer {
@@ -107,8 +108,18 @@ impl<B: Backend> Env<B> for BallEnv {
         match perspective {
             Perspective::Pursuer => {
                 let mut context = if wall_blocks {
-                    vec![self.pursuer.pos.re(), self.pursuer.pos.im(), -1.0, -1.0]
+                    if self.pursuer.memory.is_none() {
+                        self.pursuer.memory = Some(self.target.pos)
+                    }
+                    let memory = self.pursuer.memory.unwrap();
+                    vec![
+                        self.pursuer.pos.re(),
+                        self.pursuer.pos.im(),
+                        memory.re() - self.pursuer.pos.re(),
+                        memory.im() - self.pursuer.pos.im(),
+                    ]
                 } else {
+                    self.pursuer.memory = None;
                     vec![
                         self.pursuer.pos.re(),
                         self.pursuer.pos.im(),
@@ -127,7 +138,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 )
             }
             Perspective::Target => {
-                let wall_signal = (1.0 / 12.0).sqrt() * wall_blocks as u8 as f32;
+                let wall_signal = if wall_blocks { 1.0 } else { -1.0 };
 
                 let mut context = vec![
                     wall_signal,
@@ -199,28 +210,30 @@ impl<B: Backend> Env<B> for BallEnv {
             let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
 
             let t_reward = if collision {
-                Tensor::full([1, 1], -5.0, device)
+                Tensor::full([1, 1], -1.0, device)
             } else if expired {
                 Tensor::full([1, 1], 5.0, device)
             } else if wall_blocks {
                 let wall_already_blocks = initial.wall_blocks();
-                Tensor::full([1, 1], if wall_already_blocks { 1.0 } else { 4.0 }, device)
+                Tensor::full([1, 1], if wall_already_blocks { 0.5 } else { 2.0 }, device)
             } else {
                 let lasers = self.lasers(false, self.target.pos);
-                let closest = 1.0
-                    - lasers
-                        .iter()
-                        .map(|laser| laser.abs())
-                        .min_by(|a, b| a.total_cmp(b))
-                        .unwrap();
-
-                let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
+                let closest = lasers
+                    .iter()
+                    .map(|laser| laser.abs())
+                    .min_by(|a, b| a.total_cmp(b))
+                    .unwrap();
 
                 let base_reward = Tensor::full([1, 1], -distance_change, device);
-                let penalty_reward = Tensor::full([1, 1], -1.0, device);
 
-                let condition = proximity.clone().greater_elem(1.0 - (-3.0).exp());
-                base_reward.mask_where(condition, penalty_reward)
+                let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
+                let condition = proximity.lower_elem((-2.5).exp());
+
+                let zero_tensor = Tensor::zeros([1, 1], device);
+                let penalty_value = Tensor::full([1, 1], -5.0, device);
+                let additive_penalty = penalty_value.mask_where(condition, zero_tensor);
+
+                base_reward + additive_penalty
             };
 
             let t_done = Tensor::full([1, 1], collision, device);
@@ -246,6 +259,7 @@ impl BallEnv {
             pursuer: Pursuer {
                 pos: valid_spawn(),
                 time: 0,
+                memory: None,
             },
             target: Target { pos: valid_spawn() },
         }
@@ -259,8 +273,7 @@ impl BallEnv {
         let ray = Ray::new(origin, ray_dir);
 
         let wall_hit = WALLS.cast_ray(&Isometry::identity(), &ray, distance, true);
-        let wall_blocks = wall_hit.is_some_and(|hit| hit < distance);
-        wall_blocks
+        wall_hit.is_some_and(|hit| hit < distance)
     }
 
     fn lasers(&self, walls: bool, origin: Complex32) -> Vec<Complex32> {

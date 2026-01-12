@@ -38,8 +38,8 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
             let (p_state, _) = env.state_tensor(Perspective::Pursuer, device);
             let (t_state, _) = env.state_tensor(Perspective::Target, device);
 
-            let p_action = gumbel_sample(pursuer.forward(p_state) / 1.5);
-            let t_action = gumbel_sample(target.forward(t_state) / 1.5);
+            let p_action = gumbel_sample(pursuer.forward(p_state));
+            let t_action = gumbel_sample(target.forward(t_state));
 
             let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
 
