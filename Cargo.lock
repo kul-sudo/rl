@@ -4985,6 +4985,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "burn",
+ "burn-cubecl",
  "macroquad",
  "num",
  "parry2d",

@@ -4,19 +4,32 @@ use crate::env::{
     context::{Env, Perspective},
 };
 use crate::render::utils::Data;
+use crate::rl::gae::compute_gae_fused;
+use crate::rl::gae::gae_custom;
 use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
     stochastic::gumbel_sample,
 };
 use burn::{
+    backend::Autodiff,
     grad_clipping::GradientClippingConfig,
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::ToElement,
     record::CompactRecorder,
-    tensor::{Tensor, activation::log_softmax, backend::AutodiffBackend},
+    tensor::{
+        Bool, Tensor,
+        activation::log_softmax,
+        backend::{AutodiffBackend, Backend},
+        ops::{BoolTensor, FloatTensor},
+    },
+};
+use burn_cubecl::{
+    CubeBackend, CubeRuntime, FloatElement, IntElement,
+    cubecl::{CubeElement, frontend::ScalarArgSettings},
+    element::BoolElement,
 };
 use macroquad::prelude::*;
 use std::{
@@ -26,9 +39,93 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub trait GaeBackend: Backend {
+    fn fused_gae(
+        rewards: FloatTensor<Self>,
+        values: FloatTensor<Self>,
+        dones: BoolTensor<Self>,
+    ) -> FloatTensor<Self>;
+}
+pub trait GaeAutodiffBackend: GaeBackend + AutodiffBackend {}
+
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5);
 
-pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
+impl<R: CubeRuntime, F, I, BT> GaeBackend for CubeBackend<R, F, I, BT>
+where
+    F: FloatElement + CubeElement + ScalarArgSettings,
+    I: IntElement,
+    BT: BoolElement,
+{
+    fn fused_gae(
+        rewards: FloatTensor<Self>,
+        values: FloatTensor<Self>,
+        dones: BoolTensor<Self>,
+    ) -> FloatTensor<Self> {
+        compute_gae_fused::<R, F>(rewards, values, dones)
+    }
+}
+
+impl<B: GaeBackend> GaeBackend for Autodiff<B> {
+    fn fused_gae(
+        rewards: FloatTensor<Self>,
+        values: FloatTensor<Self>,
+        dones: BoolTensor<Self>,
+    ) -> FloatTensor<Self> {
+        let rewards_inner = Self::inner(rewards);
+        let values_inner = Self::inner(values);
+        let dones_inner = Self::bool_inner(dones);
+
+        let output_inner = B::fused_gae(rewards_inner, values_inner, dones_inner);
+
+        Self::from_inner(output_inner)
+    }
+}
+
+fn gae_reference<B: Backend>(
+    rewards: Tensor<B, 2>,
+    values: Tensor<B, 2>,
+    dones: Tensor<B, 2, Bool>,
+    gamma: f32,
+    lambda: f32,
+) -> Tensor<B, 2> {
+    let [batch_size, seq_len] = rewards.dims();
+    let device = &rewards.device();
+
+    let mut advantages = Vec::with_capacity(seq_len);
+    let mut last_gae = Tensor::<B, 2>::zeros([batch_size, 1], device);
+    let mut next_values = Tensor::<B, 2>::zeros([batch_size, 1], device);
+    let zero_tensor = Tensor::<B, 2>::zeros([batch_size, 1], device);
+
+    for t in (0..seq_len).rev() {
+        let r = rewards.clone().slice([0..batch_size, t..t + 1]);
+        let v = values.clone().slice([0..batch_size, t..t + 1]);
+        let d = dones.clone().slice([0..batch_size, t..t + 1]);
+
+        // If d is true (terminal), we reset future values/advantages to 0
+        let current_next_val = next_values
+            .clone()
+            .mask_where(d.clone(), zero_tensor.clone());
+        let current_last_gae = last_gae.clone().mask_where(d.clone(), zero_tensor.clone());
+
+        // delta = r + gamma * next_val_masked - v
+        let delta = r + (current_next_val * gamma) - v.clone();
+
+        // gae = delta + gamma * lambda * last_gae_masked
+        let gae = delta + (current_last_gae * (gamma * lambda));
+
+        last_gae = gae.clone();
+        next_values = v;
+
+        advantages.push(gae);
+    }
+
+    advantages.reverse();
+    Tensor::cat(advantages, 1)
+}
+
+impl<B: GaeBackend> GaeAutodiffBackend for Autodiff<B> {}
+
+pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
     mut env: E,
     data_tx: &Sender<Data<B, E>>,
     curiosity: &mut f32,
@@ -71,20 +168,35 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         let states = Tensor::cat(rollout.states, 0);
         let actions = Tensor::cat(rollout.actions, 0);
         let raw_rewards = Tensor::cat(rollout.rewards, 0);
-        let next_states = Tensor::cat(rollout.next_states, 0);
         let dones = Tensor::cat(rollout.dones, 0);
 
-        let (var, mean) = raw_rewards.clone().var_mean(0);
-        let std = var.sqrt().add_scalar(1e-8);
-        let rewards = (raw_rewards - mean) / std;
-
         let values = critic.forward(states.clone());
-        let next_values = critic.forward(next_states).detach();
-        let mask = next_values.mask_fill(dones, 0.0);
-        let td_target = rewards + (mask * GAMMA);
 
-        let critic_loss =
-            MseLoss::new().forward(values.clone(), td_target.clone(), Reduction::Mean);
+        let advantage = gae_custom(
+            raw_rewards.reshape([THREADS_PER_BLOCK, STEPS_PER_ENV]),
+            values.clone().reshape([THREADS_PER_BLOCK, STEPS_PER_ENV]),
+            dones.reshape([THREADS_PER_BLOCK, STEPS_PER_ENV]),
+        );
+        // Flatten back ONLY after GAE is calculated for loss functions
+        let advantage = advantage.reshape([BATCH_SIZE, 1]);
+
+        let td_target = (advantage.clone() + values.clone()).detach();
+
+        // let ref_advantage = gae_reference(
+        //     raw_rewards.clone(),
+        //     values.clone(),
+        //     dones.clone(),
+        //     GAMMA,
+        //     0.95, // LAMBDA
+        // );
+        //
+        // let diff = (advantage.clone() - ref_advantage)
+        //     .abs()
+        //     .mean()
+        //     .into_scalar();
+        // println!("⚠️ GAE Mismatch detected! Mean Abs Error: {}", diff);
+
+        let critic_loss = MseLoss::new().forward(values, td_target, Reduction::Mean);
         *critic = critic_optimizer.step(
             3e-4,
             critic.clone(),
@@ -98,10 +210,10 @@ pub fn training<B: AutodiffBackend, E: Env<B> + Clone>(
         let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
         let pick = log_probs.gather(1, actions);
 
-        let advantage = (td_target - values).detach();
-        let (variance, mean) = advantage.clone().var_mean(0);
+        let advantage_detached = advantage.clone().detach();
+        let (variance, mean) = advantage_detached.clone().var_mean(0);
         let std = variance.sqrt().add_scalar(1e-8);
-        let advantage_norm = (advantage - mean) / std;
+        let advantage_norm = (advantage_detached - mean) / std;
 
         let actor_loss = -(pick * advantage_norm).mean() - curiosity * entropy_loss;
 

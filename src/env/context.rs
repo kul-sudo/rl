@@ -16,7 +16,7 @@ use parry2d::{
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::{SQRT_2, TAU};
+use std::f32::consts::{E, SQRT_2, TAU};
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
@@ -91,6 +91,10 @@ pub struct Target {
 pub struct BallEnv {
     pub pursuer: Pursuer,
     pub target: Target,
+}
+
+pub fn squash(x: f32) -> f32 {
+    x.tanh() / (E - 1.0)
 }
 
 impl<B: Backend> Env<B> for BallEnv {
@@ -194,12 +198,18 @@ impl<B: Backend> Env<B> for BallEnv {
             self.pursuer.time += 1;
 
             let p_reward = if collision {
-                Tensor::full([1, 1], 5.0, device)
+                Tensor::full([1, 1], 1.0, device)
             } else if expired {
-                Tensor::full([1, 1], -5.0, device)
+                Tensor::full([1, 1], -1.0, device)
             } else {
-                Tensor::full([1, 1], distance_change, device)
+                Tensor::full([1, 1], squash(distance_change), device)
             };
+            //
+            // dbg!(
+            //     (Tensor::<B, 2>::full([1, 1], squash(0.5), device))
+            //         .into_data()
+            //         .to_vec::<f32>()
+            // );
 
             let p_done = Tensor::full([1, 1], collision || expired, device);
             Step::new(state, p_reward, p_done)
@@ -212,28 +222,32 @@ impl<B: Backend> Env<B> for BallEnv {
             let t_reward = if collision {
                 Tensor::full([1, 1], -1.0, device)
             } else if expired {
-                Tensor::full([1, 1], 5.0, device)
+                Tensor::full([1, 1], 1.0, device)
             } else if wall_blocks {
-                let wall_already_blocks = initial.wall_blocks();
-                Tensor::full([1, 1], if wall_already_blocks { 0.5 } else { 2.0 }, device)
+                Tensor::full(
+                    [1, 1],
+                    if initial.wall_blocks() { 0.04 } else { 0.1 },
+                    device,
+                )
             } else {
-                let lasers = self.lasers(false, self.target.pos);
-                let closest = lasers
-                    .iter()
-                    .map(|laser| laser.abs())
-                    .min_by(|a, b| a.total_cmp(b))
-                    .unwrap();
-
-                let base_reward = Tensor::full([1, 1], -distance_change, device);
-
-                let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
-                let condition = proximity.lower_elem((-2.5).exp());
-
-                let zero_tensor = Tensor::zeros([1, 1], device);
-                let penalty_value = Tensor::full([1, 1], -5.0, device);
-                let additive_penalty = penalty_value.mask_where(condition, zero_tensor);
-
-                base_reward + additive_penalty
+                Tensor::full([1, 1], squash(-distance_change), device)
+                // let lasers = self.lasers(false, self.target.pos);
+                // let closest = lasers
+                //     .iter()
+                //     .map(|laser| laser.abs())
+                //     .min_by(|a, b| a.total_cmp(b))
+                //     .unwrap();
+                //
+                // let base_reward = Tensor::full([1, 1], squash(-distance_change), device);
+                //
+                // let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
+                // let condition = proximity.lower_elem((-2.5).exp());
+                //
+                // let zero_tensor = Tensor::zeros([1, 1], device);
+                // let penalty_value = Tensor::full([1, 1], -0.5, device);
+                // let additive_penalty = penalty_value.mask_where(condition, zero_tensor);
+                //
+                // base_reward + additive_penalty
             };
 
             let t_done = Tensor::full([1, 1], collision, device);

@@ -6,7 +6,7 @@ mod render;
 mod rl;
 mod training;
 
-use burn::backend::{Autodiff, Cuda};
+use burn::backend::Autodiff;
 use consts::*;
 use env::context::{BallEnv, Env};
 use inference::*;
@@ -20,8 +20,11 @@ use std::{
 };
 use training::training;
 
-pub type TrainingBackend = Autodiff<Cuda<f32>>;
-pub type InferenceBackend = Cuda<f32>;
+use burn_cubecl::{CubeBackend, cubecl::cuda::CudaRuntime};
+
+pub type BaseBackend = CubeBackend<CudaRuntime, burn::tensor::f16, i32, u8>;
+pub type TrainingBackend = Autodiff<BaseBackend>;
+pub type InferenceBackend = BaseBackend;
 
 fn window_conf() -> Conf {
     Conf {
