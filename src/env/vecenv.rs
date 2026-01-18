@@ -60,10 +60,10 @@ impl<B: Backend, E: Env<B> + Clone, const N: usize> VecEnv<B, E, N> {
             t_steps.push(t_s);
         }
 
-        (self.combine(p_steps), self.combine(t_steps))
+        (self.package(p_steps), self.package(t_steps))
     }
 
-    fn combine(&self, s: Vec<Step<B>>) -> Step<B> {
+    fn package(&self, s: Vec<Step<B>>) -> Step<B> {
         Step::new(
             Tensor::cat(s.iter().map(|x| x.next_state.clone()).collect(), 0),
             Tensor::cat(s.iter().map(|x| x.reward.clone()).collect(), 0),

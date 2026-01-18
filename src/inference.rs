@@ -10,7 +10,7 @@ use burn::{module::Module, prelude::ToElement, record::CompactRecorder, tensor::
 use std::{marker::PhantomData, path::Path, sync::mpsc::SyncSender};
 
 pub fn inference<B: Backend, E: Env<B> + Clone>(
-    mut base_env: E,
+    base_env: E,
     data_tx: &SyncSender<Data<B, E, N_ENVS>>,
     device: &B::Device,
 ) {

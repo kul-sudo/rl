@@ -140,7 +140,7 @@ fn gae_reference<B: Backend>(
 impl<B: GaeBackend> GaeAutodiffBackend for Autodiff<B> {}
 
 pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
-    mut base_env: E,
+    base_env: E,
     data_tx: &Sender<Data<B, E, N_ENVS>>,
     curiosity: &mut f32,
     device: &B::Device,

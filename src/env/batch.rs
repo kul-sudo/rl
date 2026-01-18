@@ -1,3 +1,4 @@
+use crate::consts::STEPS_PER_ENV;
 use crate::env::step::Step;
 use burn::tensor::{Bool, Int, Tensor, backend::Backend};
 
@@ -11,10 +12,10 @@ pub struct BatchCollector<B: Backend> {
 impl<B: Backend> BatchCollector<B> {
     pub fn new() -> Self {
         Self {
-            states: vec![],
-            actions: vec![],
-            rewards: vec![],
-            dones: vec![],
+            states: Vec::with_capacity(STEPS_PER_ENV),
+            actions: Vec::with_capacity(STEPS_PER_ENV),
+            rewards: Vec::with_capacity(STEPS_PER_ENV),
+            dones: Vec::with_capacity(STEPS_PER_ENV),
         }
     }
 
@@ -37,11 +38,11 @@ impl<B: Backend> BatchCollector<B> {
         Tensor<B, 3>,
         Tensor<B, 3, Bool>,
     ) {
-        (
-            Tensor::stack(self.states, 0),
-            Tensor::stack(self.actions, 0),
-            Tensor::stack(self.rewards, 0),
-            Tensor::stack(self.dones, 0),
-        )
+        let states = Tensor::stack(self.states, 1);
+        let actions = Tensor::stack(self.actions, 1);
+        let rewards = Tensor::stack(self.rewards, 1);
+        let dones = Tensor::stack(self.dones, 1);
+
+        (states, actions, rewards, dones)
     }
 }

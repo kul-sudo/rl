@@ -1,4 +1,4 @@
-use crate::consts::{GAMMA, STEPS_PER_ENV};
+use crate::consts::{GAMMA, N_ENVS, STEPS_PER_ENV};
 use crate::training::GaeBackend;
 use burn::tensor::{Bool, Tensor as BurnTensor, TensorPrimitive};
 use burn_cubecl::{
@@ -81,9 +81,11 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
         F::dtype(),
     );
 
+    let cube_count = (N_ENVS as u32).div_ceil(WARP_SIZE);
+
     fused_gae_kernel::launch::<F, R>(
         &rewards.client,
-        CubeCount::new_single(),
+        CubeCount::new_1d(cube_count),
         CubeDim::new_1d(WARP_SIZE),
         rewards.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
         values.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
