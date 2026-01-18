@@ -1,5 +1,6 @@
 use crate::consts::*;
 use crate::env::context::{Env, Perspective};
+use crate::env::vecenv::VecEnv;
 use crate::render::utils::Data;
 use crate::rl::{
     actor::{Actor, ActorConfig},
@@ -9,10 +10,11 @@ use burn::{module::Module, prelude::ToElement, record::CompactRecorder, tensor::
 use std::{marker::PhantomData, path::Path, sync::mpsc::SyncSender};
 
 pub fn inference<B: Backend, E: Env<B> + Clone>(
-    mut env: E,
-    data_tx: &SyncSender<Data<B, E>>,
+    mut base_env: E,
+    data_tx: &SyncSender<Data<B, E, N_ENVS>>,
     device: &B::Device,
 ) {
+    let mut env = VecEnv::<B, E, N_ENVS>::new(base_env);
     let recorder = CompactRecorder::new();
 
     let pursuer: Actor<B> = ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize)
@@ -35,8 +37,8 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
                 _phantom: PhantomData,
             });
 
-            let (p_state, _) = env.state_tensor(Perspective::Pursuer, device);
-            let (t_state, _) = env.state_tensor(Perspective::Target, device);
+            let p_state = env.state_tensor(Perspective::Pursuer, device);
+            let t_state = env.state_tensor(Perspective::Target, device);
 
             let p_action = gumbel_sample(pursuer.forward(p_state));
             let t_action = gumbel_sample(target.forward(t_state));

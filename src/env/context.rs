@@ -33,6 +33,7 @@ pub trait Env<B: Backend> {
     ) -> (Step<B>, Step<B>);
 }
 
+#[derive(Clone, Copy)]
 pub enum Perspective {
     Pursuer,
     Target,
