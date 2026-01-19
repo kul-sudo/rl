@@ -2,14 +2,12 @@ use crate::consts::*;
 use crate::env::{
     batch::BatchCollector,
     context::{Env, Perspective},
-    vecenv::VecEnv,
 };
 use crate::render::utils::Data;
-use crate::rl::gae::compute_gae_fused;
-use crate::rl::gae::gae_custom;
 use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
+    gae::{compute_gae_fused, gae_custom},
     stochastic::gumbel_sample,
 };
 use burn::{
@@ -140,13 +138,11 @@ fn gae_reference<B: Backend>(
 impl<B: GaeBackend> GaeAutodiffBackend for Autodiff<B> {}
 
 pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
-    base_env: E,
-    data_tx: &Sender<Data<B, E, N_ENVS>>,
+    mut env: E,
+    data_tx: &Sender<Data<B, E>>,
     curiosity: &mut f32,
     device: &B::Device,
 ) {
-    let mut env = VecEnv::<B, E, N_ENVS>::new(base_env);
-
     let mut pursuer: Actor<B> =
         ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize).init(device);
     let mut p_critic: Critic<B> = CriticConfig::new(PURSUER_FACTORS).init(device);
@@ -184,21 +180,13 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                         next_state: Tensor<B, 2>| {
         let (states, actions, rewards, dones) = rollout.consume();
 
-        let flat_states = states.flatten(0, 1);
-        let flat_values = critic.forward(flat_states.clone());
-        let values = flat_values.clone().reshape([N_ENVS, STEPS_PER_ENV]);
+        let flat_values = critic.forward(states.clone());
+        let values = flat_values.clone().reshape([1, BATCH_SIZE]);
         let bootstrap = critic.forward(next_state).detach();
 
-        let advantage = gae_custom(
-            rewards.squeeze_dim(2),
-            values.detach(),
-            dones.squeeze_dim(2),
-            bootstrap,
-            device,
-        )
-        .flatten::<1>(0, 1)
-        .unsqueeze_dim::<2>(1)
-        .detach();
+        let advantage = gae_custom(rewards, values.detach(), dones, bootstrap, device)
+            .reshape([BATCH_SIZE, 1])
+            .detach();
 
         let td_target = advantage.clone() + flat_values.clone().detach();
         // let ref_advantage = gae_reference(
@@ -222,18 +210,18 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             GradientsParams::from_grads(critic_loss.backward(), critic),
         );
 
-        let logits = actor.forward(flat_states);
+        let logits = actor.forward(states);
         let log_probs = log_softmax(logits, 1);
         let probs = log_probs.clone().exp();
 
         let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
-        let pick = log_probs.gather(1, actions.flatten(0, 1));
+        let pick = log_probs.gather(1, actions);
 
         let (variance, mean) = advantage.clone().var_mean(0);
         let advantage_norm = advantage
             .clone()
             .sub(mean)
-            .div(variance.sqrt().add_scalar(1e-8));
+            .div(variance.add_scalar(1e-8).sqrt());
 
         let actor_loss = -(pick * advantage_norm).mean() - curiosity * entropy_loss;
 
@@ -245,11 +233,10 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
     };
 
     loop {
-        env.reset();
-        let mut p_rollout = BatchCollector::new();
-        let mut t_rollout = BatchCollector::new();
-        let mut p_state = env.state_tensor(Perspective::Pursuer, device);
-        let mut t_state = env.state_tensor(Perspective::Target, device);
+        let mut p_rollout = BatchCollector::new(device, PURSUER_FACTORS as usize);
+        let mut t_rollout = BatchCollector::new(device, TARGET_FACTORS as usize);
+        let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
+        let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
 
         loop {
             let _ = data_tx.send(Data {
@@ -270,7 +257,7 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             p_state = p_step.next_state;
             t_state = t_step.next_state;
 
-            if p_rollout.len() >= STEPS_PER_ENV {
+            if p_rollout.len() >= BATCH_SIZE {
                 let p_bootstrap = p_state.clone();
                 let t_bootstrap = t_state.clone();
 
@@ -294,8 +281,8 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                     t_bootstrap,
                 );
 
-                p_rollout = BatchCollector::new();
-                t_rollout = BatchCollector::new();
+                p_rollout = BatchCollector::new(device, PURSUER_FACTORS as usize);
+                t_rollout = BatchCollector::new(device, TARGET_FACTORS as usize);
             }
 
             *curiosity = (*curiosity * CURIOSITY_DECAY).max(CURIOSITY_MIN);

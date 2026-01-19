@@ -1,4 +1,4 @@
-use crate::consts::{GAMMA, N_ENVS, STEPS_PER_ENV};
+use crate::consts::{BATCH_SIZE, GAMMA};
 use crate::training::GaeBackend;
 use burn::tensor::{Bool, Tensor as BurnTensor, TensorPrimitive};
 use burn_cubecl::{
@@ -6,8 +6,7 @@ use burn_cubecl::{
     cubecl::{
         CubeCount, CubeDim, comptime, cube,
         frontend::{
-            ABSOLUTE_POS, Cast, CompilationArg, Float, FloatExpand, Line,
-            Tensor as CubeTensorFrontend,
+            ABSOLUTE_POS, Cast, CompilationArg, Float, FloatExpand, Tensor as CubeTensorFrontend,
         },
     },
     kernel::into_contiguous,
@@ -15,44 +14,42 @@ use burn_cubecl::{
 };
 
 const LAMBDA: f32 = 0.95;
-const WARP_SIZE: u32 = 32;
 
 #[cube(launch)]
 pub fn fused_gae_kernel<F: Float>(
-    rewards: &CubeTensorFrontend<Line<F>>,
-    values: &CubeTensorFrontend<Line<F>>,
-    dones: &CubeTensorFrontend<Line<bool>>,
+    rewards: &CubeTensorFrontend<F>,
+    values: &CubeTensorFrontend<F>,
+    dones: &CubeTensorFrontend<bool>,
     bootstrap_values: &CubeTensorFrontend<F>,
-    advantages: &mut CubeTensorFrontend<Line<F>>,
+    advantages: &mut CubeTensorFrontend<F>,
 ) {
     let env_id = ABSOLUTE_POS;
-    let steps = comptime!(STEPS_PER_ENV as u32);
 
-    let r_line = rewards[env_id];
-    let v_line = values[env_id];
-    let d_line = dones[env_id];
+    if env_id == 0 {
+        let steps = comptime!(BATCH_SIZE as u32);
+        let gamma = F::new(comptime!(GAMMA));
+        let gl = F::new(comptime!(GAMMA * LAMBDA));
 
-    let gamma = F::new(comptime!(GAMMA));
-    let gl = F::new(comptime!(GAMMA * LAMBDA));
+        let mut next_val = bootstrap_values[env_id];
+        let mut last_adv = F::new(0.0);
 
-    let mut next_val = bootstrap_values[env_id];
-    let mut last_adv = F::new(0.0);
-    let mut adv_out = Line::<F>::empty(comptime!(STEPS_PER_ENV as u32));
+        #[unroll]
+        for i in 0..steps {
+            let t = steps - 1 - i;
 
-    #[unroll]
-    for i in 0..steps {
-        let t = steps - 1 - i;
+            let r = rewards[t];
+            let v = values[t];
+            let d = dones[t];
+            let mask = F::cast_from(!d);
 
-        let mask = F::cast_from(!d_line[t]);
-        let delta = r_line[t] + (gamma * next_val * mask) - v_line[t];
-        let adv = delta + (gl * mask * last_adv);
+            let delta = r + (gamma * next_val * mask) - v;
+            let adv = delta + (gl * mask * last_adv);
+            advantages[t] = adv;
 
-        adv_out[t] = adv;
-        next_val = v_line[t];
-        last_adv = adv;
+            next_val = v;
+            last_adv = adv;
+        }
     }
-
-    advantages[env_id] = adv_out;
 }
 
 pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
@@ -81,17 +78,15 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
         F::dtype(),
     );
 
-    let cube_count = (N_ENVS as u32).div_ceil(WARP_SIZE);
-
     fused_gae_kernel::launch::<F, R>(
         &rewards.client,
-        CubeCount::new_1d(cube_count),
-        CubeDim::new_1d(WARP_SIZE),
-        rewards.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
-        values.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
-        dones.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
+        CubeCount::new_1d(1),
+        CubeDim::new_1d(1),
+        rewards.as_handle_ref().as_tensor_arg(1),
+        values.as_handle_ref().as_tensor_arg(1),
+        dones.as_handle_ref().as_tensor_arg(1),
         bootstrap_values.as_handle_ref().as_tensor_arg(1),
-        output.as_handle_ref().as_tensor_arg(STEPS_PER_ENV as u8),
+        output.as_handle_ref().as_tensor_arg(1),
     )
     .unwrap();
 

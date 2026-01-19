@@ -1,48 +1,52 @@
-use crate::consts::STEPS_PER_ENV;
+use crate::consts::BATCH_SIZE;
 use crate::env::step::Step;
-use burn::tensor::{Bool, Int, Tensor, backend::Backend};
+use burn::tensor::{Bool, Int, Tensor, backend::Backend, s};
 
 pub struct BatchCollector<B: Backend> {
-    pub states: Vec<Tensor<B, 2>>,
-    pub actions: Vec<Tensor<B, 2, Int>>,
-    pub rewards: Vec<Tensor<B, 2>>,
-    pub dones: Vec<Tensor<B, 2, Bool>>,
+    pub states: Tensor<B, 2>,
+    pub actions: Tensor<B, 2, Int>,
+    pub rewards: Tensor<B, 2>,
+    pub dones: Tensor<B, 2, Bool>,
+    index: usize,
 }
 
 impl<B: Backend> BatchCollector<B> {
-    pub fn new() -> Self {
+    pub fn new(device: &B::Device, state_dim: usize) -> Self {
         Self {
-            states: Vec::with_capacity(STEPS_PER_ENV),
-            actions: Vec::with_capacity(STEPS_PER_ENV),
-            rewards: Vec::with_capacity(STEPS_PER_ENV),
-            dones: Vec::with_capacity(STEPS_PER_ENV),
+            states: Tensor::zeros([BATCH_SIZE, state_dim], device),
+            actions: Tensor::zeros([BATCH_SIZE, 1], device),
+            rewards: Tensor::zeros([BATCH_SIZE, 1], device),
+            dones: Tensor::zeros([BATCH_SIZE, 1], device),
+            index: 0,
         }
     }
 
     pub fn push(&mut self, state: Tensor<B, 2>, action: Tensor<B, 2, Int>, step: Step<B>) {
-        self.states.push(state);
-        self.actions.push(action);
-        self.rewards.push(step.reward);
-        self.dones.push(step.done);
+        let range = s![self.index..self.index + 1, ..];
+
+        self.states = self.states.clone().slice_assign(range.clone(), state);
+        self.actions = self.actions.clone().slice_assign(range.clone(), action);
+        self.rewards = self
+            .rewards
+            .clone()
+            .slice_assign(range.clone(), step.reward);
+        self.dones = self.dones.clone().slice_assign(range, step.done);
+
+        self.index += 1;
     }
 
     pub fn len(&self) -> usize {
-        self.states.len()
+        self.index
     }
 
     pub fn consume(
         self,
     ) -> (
-        Tensor<B, 3>,
-        Tensor<B, 3, Int>,
-        Tensor<B, 3>,
-        Tensor<B, 3, Bool>,
+        Tensor<B, 2>,
+        Tensor<B, 2, Int>,
+        Tensor<B, 2>,
+        Tensor<B, 2, Bool>,
     ) {
-        let states = Tensor::stack(self.states, 1);
-        let actions = Tensor::stack(self.actions, 1);
-        let rewards = Tensor::stack(self.rewards, 1);
-        let dones = Tensor::stack(self.dones, 1);
-
-        (states, actions, rewards, dones)
+        (self.states, self.actions, self.rewards, self.dones)
     }
 }

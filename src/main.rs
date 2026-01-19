@@ -41,7 +41,7 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 pub async fn main() {
     let (data_tx, data_rx) = channel();
-    let (data_tx_sync, data_rx_sync) = sync_channel::<Data<InferenceBackend, BallEnv, N_ENVS>>(300);
+    let (data_tx_sync, data_rx_sync) = sync_channel::<Data<InferenceBackend, BallEnv>>(300);
 
     spawn(move || {
         let device = Default::default();

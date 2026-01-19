@@ -9,8 +9,8 @@ use std::sync::mpsc::Receiver;
 
 /// Render the situation based on the data received from either training or inference.
 pub async fn display<B: Backend, Q: Backend>(
-    data_rx: &Receiver<Data<B, BallEnv, N_ENVS>>,
-    data_rx_sync: &Receiver<Data<Q, BallEnv, N_ENVS>>,
+    data_rx: &Receiver<Data<B, BallEnv>>,
+    data_rx_sync: &Receiver<Data<Q, BallEnv>>,
 ) {
     let mut latest_data = None;
 
@@ -34,13 +34,12 @@ pub async fn display<B: Backend, Q: Backend>(
                     latest_data = Some(data);
                 }
                 if let Some(ref data) = latest_data {
-                    let first_env = data.env.envs.first().unwrap();
-                    first_env.render();
+                    data.env.render();
 
                     let text = format!(
                         "Curiosity = {:.2} Pursuer time = {:.2}",
                         data.curiosity.unwrap(),
-                        first_env.pursuer.age()
+                        data.env.pursuer.age()
                     );
                     let size = measure_text(&text, None, FONT_SIZE, 1.0);
                     set_default_camera();
@@ -50,8 +49,7 @@ pub async fn display<B: Backend, Q: Backend>(
             }
             Mode::Inference => {
                 if let Ok(ref data) = data_rx_sync.try_recv() {
-                    let first_env = data.env.envs.first().unwrap();
-                    first_env.render();
+                    data.env.render();
                 }
             }
         }
