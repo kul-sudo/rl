@@ -6,7 +6,8 @@ use burn_cubecl::{
     cubecl::{
         CubeCount, CubeDim, comptime, cube,
         frontend::{
-            ABSOLUTE_POS, Cast, CompilationArg, Float, FloatExpand, Tensor as CubeTensorFrontend,
+            ABSOLUTE_POS, Cast, CompilationArg, Float, FloatExpand, SharedMemory,
+            Tensor as CubeTensorFrontend, UNIT_POS, synchronization::sync_cube,
         },
     },
     kernel::into_contiguous,
@@ -23,30 +24,42 @@ pub fn fused_gae_kernel<F: Float>(
     bootstrap_values: &CubeTensorFrontend<F>,
     advantages: &mut CubeTensorFrontend<F>,
 ) {
-    let env_id = ABSOLUTE_POS;
+    let t = UNIT_POS;
+    let steps = comptime!(BATCH_SIZE as u32);
+    let gamma = F::new(comptime!(GAMMA));
+    let gl = F::new(comptime!(GAMMA * LAMBDA));
 
-    if env_id == 0 {
-        let steps = comptime!(BATCH_SIZE as u32);
-        let gamma = F::new(comptime!(GAMMA));
-        let gl = F::new(comptime!(GAMMA * LAMBDA));
+    let mut shared_deltas = SharedMemory::<F>::new(comptime!(BATCH_SIZE as u32));
+    let mut shared_dones = SharedMemory::<bool>::new(comptime!(BATCH_SIZE as u32));
 
-        let mut next_val = bootstrap_values[env_id];
+    if t < steps {
+        let r = rewards[t];
+        let v = values[t];
+        let d = dones[t];
+
+        let v_next = if t == steps - 1 {
+            bootstrap_values[0]
+        } else {
+            values[t + 1]
+        };
+
+        let mask = F::cast_from(!d);
+        shared_deltas[t] = r + (gamma * v_next * mask) - v;
+        shared_dones[t] = d;
+    }
+
+    sync_cube();
+
+    if t == 0 {
         let mut last_adv = F::new(0.0);
 
-        #[unroll]
         for i in 0..steps {
-            let t = steps - 1 - i;
+            let idx = steps - 1 - i;
 
-            let r = rewards[t];
-            let v = values[t];
-            let d = dones[t];
-            let mask = F::cast_from(!d);
+            let mask = F::cast_from(!shared_dones[idx]);
+            let adv = shared_deltas[idx] + (gl * mask * last_adv);
 
-            let delta = r + (gamma * next_val * mask) - v;
-            let adv = delta + (gl * mask * last_adv);
-            advantages[t] = adv;
-
-            next_val = v;
+            advantages[idx] = adv;
             last_adv = adv;
         }
     }
@@ -81,7 +94,7 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
     fused_gae_kernel::launch::<F, R>(
         &rewards.client,
         CubeCount::new_1d(1),
-        CubeDim::new_1d(1),
+        CubeDim::new_1d(BATCH_SIZE as u32),
         rewards.as_handle_ref().as_tensor_arg(1),
         values.as_handle_ref().as_tensor_arg(1),
         dones.as_handle_ref().as_tensor_arg(1),

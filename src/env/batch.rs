@@ -1,52 +1,48 @@
 use crate::consts::BATCH_SIZE;
 use crate::env::step::Step;
-use burn::tensor::{Bool, Int, Tensor, backend::Backend, s};
+use burn::tensor::{Bool, Int, Tensor, backend::Backend};
 
-pub struct BatchCollector<B: Backend> {
+pub struct Rollout<B: Backend> {
     pub states: Tensor<B, 2>,
     pub actions: Tensor<B, 2, Int>,
     pub rewards: Tensor<B, 2>,
     pub dones: Tensor<B, 2, Bool>,
-    index: usize,
+}
+
+pub struct BatchCollector<B: Backend> {
+    pub states: Vec<Tensor<B, 2>>,
+    pub actions: Vec<Tensor<B, 2, Int>>,
+    pub rewards: Vec<Tensor<B, 2>>,
+    pub dones: Vec<Tensor<B, 2, Bool>>,
 }
 
 impl<B: Backend> BatchCollector<B> {
-    pub fn new(device: &B::Device, state_dim: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            states: Tensor::zeros([BATCH_SIZE, state_dim], device),
-            actions: Tensor::zeros([BATCH_SIZE, 1], device),
-            rewards: Tensor::zeros([BATCH_SIZE, 1], device),
-            dones: Tensor::zeros([BATCH_SIZE, 1], device),
-            index: 0,
+            states: Vec::with_capacity(BATCH_SIZE),
+            actions: Vec::with_capacity(BATCH_SIZE),
+            rewards: Vec::with_capacity(BATCH_SIZE),
+            dones: Vec::with_capacity(BATCH_SIZE),
         }
     }
 
     pub fn push(&mut self, state: Tensor<B, 2>, action: Tensor<B, 2, Int>, step: Step<B>) {
-        let range = s![self.index..self.index + 1, ..];
-
-        self.states = self.states.clone().slice_assign(range.clone(), state);
-        self.actions = self.actions.clone().slice_assign(range.clone(), action);
-        self.rewards = self
-            .rewards
-            .clone()
-            .slice_assign(range.clone(), step.reward);
-        self.dones = self.dones.clone().slice_assign(range, step.done);
-
-        self.index += 1;
+        self.states.push(state);
+        self.actions.push(action);
+        self.rewards.push(step.reward);
+        self.dones.push(step.done);
     }
 
     pub fn len(&self) -> usize {
-        self.index
+        self.states.len()
     }
 
-    pub fn consume(
-        self,
-    ) -> (
-        Tensor<B, 2>,
-        Tensor<B, 2, Int>,
-        Tensor<B, 2>,
-        Tensor<B, 2, Bool>,
-    ) {
-        (self.states, self.actions, self.rewards, self.dones)
+    pub fn consume(self) -> Rollout<B> {
+        Rollout {
+            states: Tensor::cat(self.states, 0),
+            actions: Tensor::cat(self.actions, 0),
+            rewards: Tensor::cat(self.rewards, 0),
+            dones: Tensor::cat(self.dones, 0),
+        }
     }
 }
