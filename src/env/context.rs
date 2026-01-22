@@ -16,7 +16,7 @@ use parry2d::{
     query::{Ray, RayCast, contact},
     shape::Ball,
 };
-use std::f32::consts::{E, SQRT_2, TAU};
+use std::f32::consts::{SQRT_2, TAU};
 
 pub trait Env<B: Backend> {
     fn reset(&mut self);
@@ -95,7 +95,7 @@ pub struct BallEnv {
 }
 
 pub fn squash(x: f32) -> f32 {
-    x.tanh() / (E - 1.0)
+    x / (1.0 + x.abs())
 }
 
 impl<B: Backend> Env<B> for BallEnv {

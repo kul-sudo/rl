@@ -19,10 +19,10 @@ pub struct BatchCollector<B: Backend> {
 impl<B: Backend> BatchCollector<B> {
     pub fn new() -> Self {
         Self {
-            states: Vec::with_capacity(BATCH_SIZE),
-            actions: Vec::with_capacity(BATCH_SIZE),
-            rewards: Vec::with_capacity(BATCH_SIZE),
-            dones: Vec::with_capacity(BATCH_SIZE),
+            states: Vec::with_capacity(BATCH_SIZE as usize),
+            actions: Vec::with_capacity(BATCH_SIZE as usize),
+            rewards: Vec::with_capacity(BATCH_SIZE as usize),
+            dones: Vec::with_capacity(BATCH_SIZE as usize),
         }
     }
 

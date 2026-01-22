@@ -5,8 +5,8 @@ edition = "2024"
 
 [dependencies]
 bincode = "2.0.1"
-burn = { version = "0.20.0-pre.6", features = ["autodiff", "cuda", "ndarray"] }   
-burn-cubecl = "0.20.0-pre.6"
+burn = { version = "0.20.0", features = ["autodiff", "cuda", "ndarray"] }   
+burn-cubecl = "0.20.0"
 macroquad = "0.4.14"
 num = "0.4.3"
 parry2d = "0.25.3"

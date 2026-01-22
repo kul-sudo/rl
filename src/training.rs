@@ -13,13 +13,17 @@ use crate::rl::{
 use burn::{
     backend::Autodiff,
     grad_clipping::GradientClippingConfig,
+    lr_scheduler::{
+        LrScheduler,
+        exponential::{ExponentialLrScheduler, ExponentialLrSchedulerConfig},
+    },
     module::Module,
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        Bool, Tensor,
+        Tensor,
         activation::log_softmax,
         backend::{AutodiffBackend, Backend},
         ops::{BoolTensor, FloatTensor},
@@ -93,48 +97,6 @@ impl<B: GaeBackend> GaeBackend for Autodiff<B> {
     }
 }
 
-fn gae_reference<B: Backend>(
-    rewards: Tensor<B, 2>,
-    values: Tensor<B, 2>,
-    dones: Tensor<B, 2, Bool>,
-    gamma: f32,
-    lambda: f32,
-) -> Tensor<B, 2> {
-    let [batch_size, seq_len] = rewards.dims();
-    let device = &rewards.device();
-
-    let mut advantages = Vec::with_capacity(seq_len);
-    let mut last_gae = Tensor::<B, 2>::zeros([batch_size, 1], device);
-    let mut next_values = Tensor::<B, 2>::zeros([batch_size, 1], device);
-    let zero_tensor = Tensor::<B, 2>::zeros([batch_size, 1], device);
-
-    for t in (0..seq_len).rev() {
-        let r = rewards.clone().slice([0..batch_size, t..t + 1]);
-        let v = values.clone().slice([0..batch_size, t..t + 1]);
-        let d = dones.clone().slice([0..batch_size, t..t + 1]);
-
-        // If d is true (terminal), we reset future values/advantages to 0
-        let current_next_val = next_values
-            .clone()
-            .mask_where(d.clone(), zero_tensor.clone());
-        let current_last_gae = last_gae.clone().mask_where(d.clone(), zero_tensor.clone());
-
-        // delta = r + gamma * next_val_masked - v
-        let delta = r + (current_next_val * gamma) - v.clone();
-
-        // gae = delta + gamma * lambda * last_gae_masked
-        let gae = delta + (current_last_gae * (gamma * lambda));
-
-        last_gae = gae.clone();
-        next_values = v;
-
-        advantages.push(gae);
-    }
-
-    advantages.reverse();
-    Tensor::cat(advantages, 1)
-}
-
 impl<B: GaeBackend> GaeAutodiffBackend for Autodiff<B> {}
 
 pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
@@ -170,11 +132,23 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
+    let p_lr_config = ExponentialLrSchedulerConfig::new(1e-4, LR_GAMMA);
+    let pc_lr_config = ExponentialLrSchedulerConfig::new(3e-4, LR_GAMMA);
+    let t_lr_config = ExponentialLrSchedulerConfig::new(1e-4, LR_GAMMA);
+    let tc_lr_config = ExponentialLrSchedulerConfig::new(3e-4, LR_GAMMA);
+
+    let mut p_scheduler = p_lr_config.init().unwrap();
+    let mut pc_scheduler = pc_lr_config.init().unwrap();
+    let mut t_scheduler = t_lr_config.init().unwrap();
+    let mut tc_scheduler = tc_lr_config.init().unwrap();
+
     let mut checkpoint_timer = Instant::now();
     let update_agent = |actor: &mut Actor<B>,
                         critic: &mut Critic<B>,
                         actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
                         critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
+                        actor_scheduler: &mut ExponentialLrScheduler,
+                        critic_scheduler: &mut ExponentialLrScheduler,
                         rollout: BatchCollector<B>,
                         curiosity: f32,
                         next_state: Tensor<B, 2>| {
@@ -195,23 +169,12 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
         .detach();
 
         let td_target = advantage.clone() + flat_values.clone().detach();
-        // let ref_advantage = gae_reference(
-        //     raw_rewards.clone(),
-        //     values.clone(),
-        //     dones.clone(),
-        //     GAMMA,
-        //     0.95, // LAMBDA
-        // );
-        //
-        // let diff = (advantage.clone() - ref_advantage)
-        //     .abs()
-        //     .mean()
-        //     .into_scalar();
-        // println!("⚠️ GAE Mismatch detected! Mean Abs Error: {}", diff);
 
+        let critic_lr = critic_scheduler.step();
+        dbg!(critic_lr);
         let critic_loss = MseLoss::new().forward(flat_values, td_target, Reduction::Mean);
         *critic = critic_optimizer.step(
-            3e-4,
+            critic_lr,
             critic.clone(),
             GradientsParams::from_grads(critic_loss.backward(), critic),
         );
@@ -229,20 +192,21 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             .sub(mean)
             .div(variance.add_scalar(1e-8).sqrt());
 
+        let actor_lr = actor_scheduler.step();
         let actor_loss = -(pick * advantage_norm).mean() - curiosity * entropy_loss;
-
         *actor = actor_optimizer.step(
-            1e-4,
+            actor_lr,
             actor.clone(),
             GradientsParams::from_grads(actor_loss.backward(), actor),
         );
     };
 
+    let mut p_rollout = BatchCollector::new();
+    let mut t_rollout = BatchCollector::new();
+
     loop {
         env.reset();
 
-        let mut p_rollout = BatchCollector::new();
-        let mut t_rollout = BatchCollector::new();
         let (mut p_state, _) = env.state_tensor(Perspective::Pursuer, device);
         let (mut t_state, _) = env.state_tensor(Perspective::Target, device);
 
@@ -265,7 +229,7 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             p_state = p_step.next_state;
             t_state = t_step.next_state;
 
-            if p_rollout.len() >= BATCH_SIZE {
+            if p_rollout.len() >= BATCH_SIZE as usize {
                 let p_bootstrap = p_state.clone();
                 let t_bootstrap = t_state.clone();
 
@@ -274,6 +238,8 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                     &mut p_critic,
                     &mut p_optimizer,
                     &mut pc_optimizer,
+                    &mut p_scheduler,
+                    &mut pc_scheduler,
                     p_rollout,
                     *curiosity,
                     p_bootstrap,
@@ -284,6 +250,8 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                     &mut t_critic,
                     &mut t_optimizer,
                     &mut tc_optimizer,
+                    &mut t_scheduler,
+                    &mut tc_scheduler,
                     t_rollout,
                     *curiosity,
                     t_bootstrap,

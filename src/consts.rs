@@ -2,8 +2,9 @@ use num::complex::Complex32;
 use std::f32::consts::SQRT_2;
 
 // Parameters
-pub const BATCH_SIZE: usize = 64;
+pub const BATCH_SIZE: u32 = 128;
 pub const GAMMA: f32 = 0.995;
+pub const LR_GAMMA: f64 = 0.999;
 pub const N_DIRECTIONS: u32 = 23 + 1; // Last means not moving at all
 pub const CURIOSITY_DECAY: f32 = 0.99999;
 pub const CURIOSITY_DEFAULT: f32 = 1.0;
@@ -18,8 +19,6 @@ pub const PURSUER_FACTORS: usize = 4 + N_LASERS * 2;
 pub const TARGET_SPEED: f32 = SQRT_2 * PURSUER_SPEED;
 pub const N_LASERS: usize = 32;
 pub const TARGET_FACTORS: usize = 6 + N_LASERS * 2;
-
-// pub const N_TARGETS: usize = 5;
 
 // Visuals
 pub const SIZE: Complex32 = Complex32::new(1080.0, 1080.0);
