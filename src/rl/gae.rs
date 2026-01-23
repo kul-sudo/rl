@@ -6,9 +6,8 @@ use burn_cubecl::{
     cubecl::{
         CubeCount, CubeDim, comptime, cube,
         frontend::{
-            ABSOLUTE_POS, Cast, CompilationArg, CubeIndexExpand, CubeIndexMutExpand, Float,
-            FloatExpand, SharedMemory, Tensor as CubeTensorFrontend, UNIT_POS,
-            synchronization::sync_cube,
+            Cast, CompilationArg, CubeIndexExpand, CubeIndexMutExpand, Float, FloatExpand,
+            SharedMemory, Tensor as CubeTensorFrontend, UNIT_POS, synchronization::sync_cube,
         },
     },
     kernel::into_contiguous,
@@ -114,15 +113,18 @@ pub fn gae_custom<B: GaeBackend>(
     bootstrap_values: BurnTensor<B, 2>,
     device: &B::Device,
 ) -> BurnTensor<B, 2> {
-    let shape = rewards.shape();
+    let rewards = rewards.detach().into_primitive();
+    let values = values.detach().into_primitive();
+    let dones = dones.into_primitive();
+    let bootstrap = bootstrap_values.detach().into_primitive();
 
     let output = B::fused_gae(
-        rewards.into_primitive().tensor(),
-        values.detach().into_primitive().tensor(),
-        dones.into_primitive(),
-        bootstrap_values.into_primitive().tensor(),
+        rewards.tensor(),
+        values.tensor(),
+        dones,
+        bootstrap.tensor(),
         device,
     );
 
-    BurnTensor::<B, 2>::from_primitive(TensorPrimitive::Float(output)).reshape(shape)
+    BurnTensor::<B, 2>::from_primitive(TensorPrimitive::Float(output))
 }

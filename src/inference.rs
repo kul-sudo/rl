@@ -8,21 +8,19 @@ use crate::rl::{
 use burn::{module::Module, prelude::ToElement, record::CompactRecorder, tensor::backend::Backend};
 use std::{marker::PhantomData, path::Path, sync::mpsc::SyncSender};
 
-pub fn inference<B: Backend, E: Env<B> + Clone>(
-    mut env: E,
-    data_tx: &SyncSender<Data<B, E>>,
-    device: &B::Device,
-) {
+pub fn inference<B: Backend, E: Env<B> + Clone>(mut env: E, data_tx: &SyncSender<Data<B, E>>) {
+    let device = B::Device::default();
+
     let recorder = CompactRecorder::new();
 
     let pursuer: Actor<B> = ActorConfig::new(PURSUER_FACTORS, N_DIRECTIONS as usize)
-        .init(device)
-        .load_file(Path::new(ARTIFACT_DIR).join("pursuer"), &recorder, device)
+        .init(&device)
+        .load_file(Path::new(ARTIFACT_DIR).join("pursuer"), &recorder, &device)
         .expect("Failed to load pursuer.mpk");
 
     let target: Actor<B> = ActorConfig::new(TARGET_FACTORS, N_DIRECTIONS as usize)
-        .init(device)
-        .load_file(Path::new(ARTIFACT_DIR).join("target"), &recorder, device)
+        .init(&device)
+        .load_file(Path::new(ARTIFACT_DIR).join("target"), &recorder, &device)
         .expect("Failed to load target.mpk");
 
     loop {
@@ -35,13 +33,13 @@ pub fn inference<B: Backend, E: Env<B> + Clone>(
                 _phantom: PhantomData,
             });
 
-            let (p_state, _) = env.state_tensor(Perspective::Pursuer, device);
-            let (t_state, _) = env.state_tensor(Perspective::Target, device);
+            let (p_state, _) = env.state_tensor(Perspective::Pursuer, &device);
+            let (t_state, _) = env.state_tensor(Perspective::Target, &device);
 
             let p_action = gumbel_sample(pursuer.forward(p_state));
             let t_action = gumbel_sample(target.forward(t_state));
 
-            let (p_step, t_step) = env.step_simultaneous(p_action, t_action, device);
+            let (p_step, t_step) = env.step_simultaneous(p_action, t_action, &device);
 
             if p_step.done.clone().any().into_scalar().to_bool()
                 || t_step.done.clone().any().into_scalar().to_bool()

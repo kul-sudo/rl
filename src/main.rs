@@ -22,7 +22,7 @@ use training::training;
 
 use burn_cubecl::{CubeBackend, cubecl::cuda::CudaRuntime};
 
-pub type BaseBackend = CubeBackend<CudaRuntime, burn::tensor::f16, i32, u8>;
+pub type BaseBackend = CubeBackend<CudaRuntime, f32, i32, u8>;
 pub type TrainingBackend = Autodiff<BaseBackend>;
 pub type InferenceBackend = BaseBackend;
 
@@ -44,17 +44,16 @@ pub async fn main() {
     let (data_tx_sync, data_rx_sync) = sync_channel::<Data<InferenceBackend, BallEnv>>(300);
 
     spawn(move || {
-        let device = Default::default();
         let env = BallEnv::new();
 
         match *MODE {
             Mode::Inference => {
-                inference::<InferenceBackend, BallEnv>(env, &data_tx_sync, &device);
+                inference::<InferenceBackend, BallEnv>(env, &data_tx_sync);
             }
             Mode::Training => {
                 let mut curiosity = CURIOSITY_DEFAULT;
 
-                training::<TrainingBackend, BallEnv>(env, &data_tx, &mut curiosity, &device);
+                training::<TrainingBackend, BallEnv>(env, &data_tx, &mut curiosity);
             }
         }
     });

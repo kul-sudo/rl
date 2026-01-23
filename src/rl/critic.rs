@@ -53,7 +53,7 @@ impl CriticConfig {
 #[derive(Module, Debug)]
 pub struct Critic<B: Backend> {
     gate: Linear<B>,
-    fc1: Linear<B>,
+    pub fc1: Linear<B>,
     derf1: Derf<B>,
     fc2: Linear<B>,
     derf2: Derf<B>,

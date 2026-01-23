@@ -27,9 +27,9 @@ impl<B: Backend> BatchCollector<B> {
     }
 
     pub fn push(&mut self, state: Tensor<B, 2>, action: Tensor<B, 2, Int>, step: Step<B>) {
-        self.states.push(state);
+        self.states.push(state.detach());
         self.actions.push(action);
-        self.rewards.push(step.reward);
+        self.rewards.push(step.reward.detach());
         self.dones.push(step.done);
     }
 
