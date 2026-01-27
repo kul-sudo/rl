@@ -205,12 +205,6 @@ impl<B: Backend> Env<B> for BallEnv {
             } else {
                 Tensor::full([1, 1], squash(distance_change), device)
             };
-            //
-            // dbg!(
-            //     (Tensor::<B, 2>::full([1, 1], squash(0.5), device))
-            //         .into_data()
-            //         .to_vec::<f32>()
-            // );
 
             let p_done = Tensor::full([1, 1], collision || expired, device);
             Step::new(state, p_reward, p_done)
@@ -224,31 +218,16 @@ impl<B: Backend> Env<B> for BallEnv {
                 Tensor::full([1, 1], -1.0, device)
             } else if expired {
                 Tensor::full([1, 1], 1.0, device)
-            } else if wall_blocks {
-                Tensor::full(
-                    [1, 1],
-                    if initial.wall_blocks() { 0.04 } else { 0.1 },
-                    device,
-                )
             } else {
-                Tensor::full([1, 1], squash(-distance_change), device)
-                // let lasers = self.lasers(false, self.target.pos);
-                // let closest = lasers
-                //     .iter()
-                //     .map(|laser| laser.abs())
-                //     .min_by(|a, b| a.total_cmp(b))
-                //     .unwrap();
-                //
-                // let base_reward = Tensor::full([1, 1], squash(-distance_change), device);
-                //
-                // let proximity = Tensor::<B, 2>::full([1, 1], closest, device);
-                // let condition = proximity.lower_elem((-2.5).exp());
-                //
-                // let zero_tensor = Tensor::zeros([1, 1], device);
-                // let penalty_value = Tensor::full([1, 1], -0.5, device);
-                // let additive_penalty = penalty_value.mask_where(condition, zero_tensor);
-                //
-                // base_reward + additive_penalty
+                let dist_reward = (new_distance + 1.0).ln() / (SQRT_2 + 1.0).ln();
+                let hide_val = if wall_blocks {
+                    if initial.wall_blocks() { 0.05 } else { 0.15 }
+                } else {
+                    -0.2
+                };
+
+                let total = dist_reward + hide_val + 0.01;
+                Tensor::full([1, 1], squash(total), device)
             };
 
             let t_done = Tensor::full([1, 1], collision, device);

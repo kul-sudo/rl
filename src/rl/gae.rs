@@ -24,8 +24,8 @@ pub fn fused_gae_kernel<F: Float>(
     bootstrap_values: &CubeTensorFrontend<F>,
     advantages: &mut CubeTensorFrontend<F>,
 ) {
-    let t = UNIT_POS;
-    let steps = comptime!(BATCH_SIZE);
+    let t = UNIT_POS as usize;
+    let steps = comptime!(BATCH_SIZE as usize);
     let gamma = F::new(comptime!(GAMMA));
     let gl = F::new(comptime!(GAMMA * LAMBDA));
 
@@ -33,19 +33,19 @@ pub fn fused_gae_kernel<F: Float>(
     let mut shared_dones = SharedMemory::<bool>::new(comptime!(BATCH_SIZE as usize));
 
     if t < steps {
-        let r = rewards[t as usize];
-        let v = values[t as usize];
-        let d = dones[t as usize];
+        let r = rewards[t];
+        let v = values[t];
+        let d = dones[t];
 
         let v_next = if t == steps - 1 {
             bootstrap_values[0]
         } else {
-            values[t as usize + 1]
+            values[t + 1]
         };
 
         let mask = F::cast_from(!d);
-        shared_deltas[t as usize] = r + (gamma * v_next * mask) - v;
-        shared_dones[t as usize] = d;
+        shared_deltas[t] = r + (gamma * v_next * mask) - v;
+        shared_dones[t] = d;
     }
 
     sync_cube();
@@ -56,10 +56,10 @@ pub fn fused_gae_kernel<F: Float>(
         for i in 0..steps {
             let idx = steps - 1 - i;
 
-            let mask = F::cast_from(!shared_dones[idx as usize]);
-            let adv = shared_deltas[idx as usize] + (gl * mask * last_adv);
+            let mask = F::cast_from(!shared_dones[idx]);
+            let adv = shared_deltas[idx] + (gl * mask * last_adv);
 
-            advantages[idx as usize] = adv;
+            advantages[idx] = adv;
             last_adv = adv;
         }
     }

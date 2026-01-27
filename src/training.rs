@@ -17,7 +17,7 @@ use burn::{
         LrScheduler,
         exponential::{ExponentialLrScheduler, ExponentialLrSchedulerConfig},
     },
-    module::Module,
+    module::{AutodiffModule, Module},
     nn::loss::{MseLoss, Reduction},
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::ToElement,
@@ -97,18 +97,41 @@ impl<B: GaeBackend> GaeBackend for Autodiff<B> {
     }
 }
 
-fn update_agent<B: GaeAutodiffBackend>(
-    actor: &mut Actor<B>,
-    critic: &mut Critic<B>,
-    actor_optimizer: &mut OptimizerAdaptor<AdamW, Actor<B>, B>,
-    critic_optimizer: &mut OptimizerAdaptor<AdamW, Critic<B>, B>,
-    actor_scheduler: &mut ExponentialLrScheduler,
-    critic_scheduler: &mut ExponentialLrScheduler,
-    rollout: BatchCollector<B>,
-    curiosity: f32,
-    next_state: Tensor<B, 2>,
-    device: &B::Device,
-) {
+pub struct Learner<'a, B: GaeAutodiffBackend, M: AutodiffModule<B>> {
+    pub model: &'a mut M,
+    pub optimizer: &'a mut OptimizerAdaptor<AdamW, M, B>,
+    pub scheduler: &'a mut ExponentialLrScheduler,
+}
+
+pub struct UpdateContext<'a, B: GaeAutodiffBackend> {
+    pub actor_learner: Learner<'a, B, Actor<B>>,
+    pub critic_learner: Learner<'a, B, Critic<B>>,
+    pub rollout: BatchCollector<B>,
+    pub next_state: Tensor<B, 2>,
+    pub curiosity: f32,
+    pub device: &'a B::Device,
+}
+
+fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
+    let UpdateContext {
+        actor_learner:
+            Learner {
+                model: actor,
+                optimizer: actor_optimizer,
+                scheduler: actor_scheduler,
+            },
+        critic_learner:
+            Learner {
+                model: critic,
+                optimizer: critic_optimizer,
+                scheduler: critic_scheduler,
+            },
+        rollout,
+        next_state,
+        curiosity,
+        device,
+    } = context;
+
     let rollout = rollout.consume();
     let flat_values = critic.forward(rollout.states.clone());
 
@@ -126,7 +149,6 @@ fn update_agent<B: GaeAutodiffBackend>(
     .detach();
 
     let td_target = advantage.clone() + flat_values.clone().detach();
-    dbg!(td_target.is_require_grad());
 
     let critic_lr = critic_scheduler.step();
     let critic_loss = MseLoss::new().forward(flat_values, td_target, Reduction::Mean);
@@ -149,8 +171,6 @@ fn update_agent<B: GaeAutodiffBackend>(
         .clone()
         .sub(mean)
         .div(variance.add_scalar(1e-8).sqrt());
-
-    dbg!(advantage_norm.is_require_grad());
 
     let actor_lr = actor_scheduler.step();
     let actor_loss = -(pick * advantage_norm).mean() - curiosity * entropy_loss;
@@ -239,34 +259,43 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             t_state = t_step.next_state.detach();
 
             if p_rollout.len() >= BATCH_SIZE as usize {
-                let p_bootstrap = p_state.clone();
-                let t_bootstrap = t_state.clone();
+                let p_context = UpdateContext {
+                    actor_learner: Learner {
+                        model: &mut pursuer,
+                        optimizer: &mut p_optimizer,
+                        scheduler: &mut p_scheduler,
+                    },
+                    critic_learner: Learner {
+                        model: &mut p_critic,
+                        optimizer: &mut pc_optimizer,
+                        scheduler: &mut pc_scheduler,
+                    },
+                    rollout: p_rollout,
+                    next_state: p_state.clone(),
+                    curiosity: *curiosity,
+                    device: &device,
+                };
 
-                update_agent(
-                    &mut pursuer,
-                    &mut p_critic,
-                    &mut p_optimizer,
-                    &mut pc_optimizer,
-                    &mut p_scheduler,
-                    &mut pc_scheduler,
-                    p_rollout,
-                    *curiosity,
-                    p_bootstrap,
-                    &device,
-                );
+                update_agent(p_context);
 
-                update_agent(
-                    &mut target,
-                    &mut t_critic,
-                    &mut t_optimizer,
-                    &mut tc_optimizer,
-                    &mut t_scheduler,
-                    &mut tc_scheduler,
-                    t_rollout,
-                    *curiosity,
-                    t_bootstrap,
-                    &device,
-                );
+                let t_context = UpdateContext {
+                    actor_learner: Learner {
+                        model: &mut target,
+                        optimizer: &mut t_optimizer,
+                        scheduler: &mut t_scheduler,
+                    },
+                    critic_learner: Learner {
+                        model: &mut t_critic,
+                        optimizer: &mut tc_optimizer,
+                        scheduler: &mut tc_scheduler,
+                    },
+                    rollout: t_rollout,
+                    next_state: t_state.clone(),
+                    curiosity: *curiosity,
+                    device: &device,
+                };
+
+                update_agent(t_context);
 
                 p_rollout = BatchCollector::new();
                 t_rollout = BatchCollector::new();
