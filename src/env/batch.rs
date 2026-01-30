@@ -7,6 +7,7 @@ pub struct Rollout<B: Backend> {
     pub actions: Tensor<B, 2, Int>,
     pub rewards: Tensor<B, 2>,
     pub dones: Tensor<B, 2, Bool>,
+    pub terminated: Tensor<B, 2, Bool>,
 }
 
 pub struct BatchCollector<B: Backend> {
@@ -14,6 +15,7 @@ pub struct BatchCollector<B: Backend> {
     pub actions: Vec<Tensor<B, 2, Int>>,
     pub rewards: Vec<Tensor<B, 2>>,
     pub dones: Vec<Tensor<B, 2, Bool>>,
+    pub terminated: Vec<Tensor<B, 2, Bool>>,
 }
 
 impl<B: Backend> BatchCollector<B> {
@@ -23,6 +25,7 @@ impl<B: Backend> BatchCollector<B> {
             actions: Vec::with_capacity(BATCH_SIZE as usize),
             rewards: Vec::with_capacity(BATCH_SIZE as usize),
             dones: Vec::with_capacity(BATCH_SIZE as usize),
+            terminated: Vec::with_capacity(BATCH_SIZE as usize),
         }
     }
 
@@ -31,6 +34,7 @@ impl<B: Backend> BatchCollector<B> {
         self.actions.push(action);
         self.rewards.push(step.reward.detach());
         self.dones.push(step.done);
+        self.terminated.push(step.terminated);
     }
 
     pub fn len(&self) -> usize {
@@ -43,6 +47,7 @@ impl<B: Backend> BatchCollector<B> {
             actions: Tensor::cat(self.actions, 0),
             rewards: Tensor::cat(self.rewards, 0),
             dones: Tensor::cat(self.dones, 0),
+            terminated: Tensor::cat(self.terminated, 0),
         }
     }
 }

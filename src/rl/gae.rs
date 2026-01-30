@@ -21,6 +21,7 @@ pub fn fused_gae_kernel<F: Float>(
     rewards: &CubeTensorFrontend<F>,
     values: &CubeTensorFrontend<F>,
     dones: &CubeTensorFrontend<bool>,
+    terminated: &CubeTensorFrontend<bool>,
     bootstrap_values: &CubeTensorFrontend<F>,
     advantages: &mut CubeTensorFrontend<F>,
 ) {
@@ -33,19 +34,15 @@ pub fn fused_gae_kernel<F: Float>(
     let mut shared_dones = SharedMemory::<bool>::new(comptime!(BATCH_SIZE as usize));
 
     if t < steps {
-        let r = rewards[t];
-        let v = values[t];
-        let d = dones[t];
-
         let v_next = if t == steps - 1 {
             bootstrap_values[0]
         } else {
             values[t + 1]
         };
 
-        let mask = F::cast_from(!d);
-        shared_deltas[t] = r + (gamma * v_next * mask) - v;
-        shared_dones[t] = d;
+        let boot_mask = F::cast_from(!terminated[t]);
+        shared_deltas[t] = rewards[t] + (gamma * v_next * boot_mask) - values[t];
+        shared_dones[t] = dones[t];
     }
 
     sync_cube();
@@ -56,9 +53,8 @@ pub fn fused_gae_kernel<F: Float>(
         for i in 0..steps {
             let idx = steps - 1 - i;
 
-            let mask = F::cast_from(!shared_dones[idx]);
-            let adv = shared_deltas[idx] + (gl * mask * last_adv);
-
+            let done_mask = F::cast_from(!shared_dones[idx]);
+            let adv = shared_deltas[idx] + (gl * done_mask * last_adv);
             advantages[idx] = adv;
             last_adv = adv;
         }
@@ -69,6 +65,7 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
     rewards: CubeTensor<R>,
     values: CubeTensor<R>,
     dones: CubeTensor<R>,
+    terminated: CubeTensor<R>,
     bootstrap_values: CubeTensor<R>,
     device: &R::Device,
 ) -> CubeTensor<R> {
@@ -98,6 +95,7 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
         rewards.as_handle_ref().as_tensor_arg(1),
         values.as_handle_ref().as_tensor_arg(1),
         dones.as_handle_ref().as_tensor_arg(1),
+        terminated.as_handle_ref().as_tensor_arg(1),
         bootstrap_values.as_handle_ref().as_tensor_arg(1),
         output.as_handle_ref().as_tensor_arg(1),
     )
@@ -110,18 +108,21 @@ pub fn gae_custom<B: GaeBackend>(
     rewards: BurnTensor<B, 2>,
     values: BurnTensor<B, 2>,
     dones: BurnTensor<B, 2, Bool>,
+    terminated: BurnTensor<B, 2, Bool>,
     bootstrap_values: BurnTensor<B, 2>,
     device: &B::Device,
 ) -> BurnTensor<B, 2> {
     let rewards = rewards.detach().into_primitive();
     let values = values.detach().into_primitive();
     let dones = dones.into_primitive();
+    let terminated = terminated.into_primitive();
     let bootstrap = bootstrap_values.detach().into_primitive();
 
     let output = B::fused_gae(
         rewards.tensor(),
         values.tensor(),
         dones,
+        terminated,
         bootstrap.tensor(),
         device,
     );

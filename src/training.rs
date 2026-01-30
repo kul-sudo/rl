@@ -47,6 +47,7 @@ pub trait GaeBackend: Backend {
         rewards: FloatTensor<Self>,
         values: FloatTensor<Self>,
         dones: BoolTensor<Self>,
+        terminated: BoolTensor<Self>,
         bootstrap_values: FloatTensor<Self>,
         device: &Self::Device,
     ) -> FloatTensor<Self>;
@@ -65,10 +66,11 @@ where
         rewards: FloatTensor<Self>,
         values: FloatTensor<Self>,
         dones: BoolTensor<Self>,
+        terminated: BoolTensor<Self>,
         bootstrap_values: FloatTensor<Self>,
         device: &Self::Device,
     ) -> FloatTensor<Self> {
-        compute_gae_fused::<R, F>(rewards, values, dones, bootstrap_values, device)
+        compute_gae_fused::<R, F>(rewards, values, dones, terminated, bootstrap_values, device)
     }
 }
 
@@ -77,18 +79,21 @@ impl<B: GaeBackend> GaeBackend for Autodiff<B> {
         rewards: FloatTensor<Self>,
         values: FloatTensor<Self>,
         dones: BoolTensor<Self>,
+        terminated: BoolTensor<Self>,
         bootstrap_values: FloatTensor<Self>,
         device: &Self::Device,
     ) -> FloatTensor<Self> {
         let rewards_inner = Self::inner(rewards);
         let values_inner = Self::inner(values);
         let dones_inner = Self::bool_inner(dones);
+        let terminated_inner = Self::bool_inner(terminated);
         let bootstrap_inner = Self::inner(bootstrap_values);
 
         let output_inner = B::fused_gae(
             rewards_inner,
             values_inner,
             dones_inner,
+            terminated_inner,
             bootstrap_inner,
             device,
         );
@@ -142,6 +147,7 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
         rollout.rewards,
         values.detach(),
         rollout.dones,
+        rollout.terminated,
         bootstrap,
         device,
     )
@@ -208,13 +214,13 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
 
     // Critic optimizers
     let mut pc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-2)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-3)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut tc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-2)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-3)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -258,7 +264,7 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
             p_state = p_step.next_state.detach();
             t_state = t_step.next_state.detach();
 
-            if p_rollout.len() >= BATCH_SIZE as usize {
+            if p_rollout.len() == BATCH_SIZE as usize {
                 let p_context = UpdateContext {
                     actor_learner: Learner {
                         model: &mut pursuer,

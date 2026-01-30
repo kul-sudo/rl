@@ -6,9 +6,8 @@ use burn::{
     config::Config,
     module::{Initializer, Module},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, activation::sigmoid, backend::Backend},
+    tensor::{Tensor, activation::glu, backend::Backend},
 };
-use std::f64::consts::SQRT_2;
 
 #[derive(Config, Debug)]
 pub struct ActorConfig {
@@ -19,17 +18,19 @@ pub struct ActorConfig {
 impl ActorConfig {
     pub fn init<B: Backend>(self, device: &B::Device) -> Actor<B> {
         Actor {
-            gate: LinearConfig::new(self.obs_dim, self.obs_dim).init(device),
+            gate: LinearConfig::new(self.obs_dim, self.obs_dim * 2)
+                .with_initializer(Initializer::XavierNormal { gain: 1.0 })
+                .init(device),
             fc1: LinearConfig::new(self.obs_dim, 1024)
                 .with_initializer(Initializer::KaimingNormal {
-                    gain: SQRT_2,
+                    gain: 1.0,
                     fan_out_only: false,
                 })
                 .init(device),
             derf1: DerfConfig::new(1024).init(device),
             fc2: LinearConfig::new(1024, 512)
                 .with_initializer(Initializer::KaimingNormal {
-                    gain: SQRT_2,
+                    gain: 1.0,
                     fan_out_only: false,
                 })
                 .init(device),
@@ -56,8 +57,8 @@ pub struct Actor<B: Backend> {
 
 impl<B: Backend> Actor<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let mask = sigmoid(self.gate.forward(x.clone()));
-        let x = x * mask;
+        let x = self.gate.forward(x);
+        let x = glu(x, 1);
 
         let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);

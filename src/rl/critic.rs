@@ -6,9 +6,8 @@ use burn::{
     config::Config,
     module::{Initializer, Module},
     nn::{Linear, LinearConfig},
-    tensor::{Tensor, activation::sigmoid, backend::Backend},
+    tensor::{Tensor, activation::glu, backend::Backend},
 };
-use std::f64::consts::SQRT_2;
 
 #[derive(Config, Debug)]
 pub struct CriticConfig {
@@ -18,24 +17,26 @@ pub struct CriticConfig {
 impl CriticConfig {
     pub fn init<B: Backend>(self, device: &B::Device) -> Critic<B> {
         Critic {
-            gate: LinearConfig::new(self.obs_dim, self.obs_dim).init(device),
+            gate: LinearConfig::new(self.obs_dim, self.obs_dim * 2)
+                .with_initializer(Initializer::XavierNormal { gain: 1.0 })
+                .init(device),
             fc1: LinearConfig::new(self.obs_dim, 1024)
                 .with_initializer(Initializer::KaimingNormal {
-                    gain: SQRT_2,
+                    gain: 1.0,
                     fan_out_only: false,
                 })
                 .init(device),
             derf1: DerfConfig::new(1024).init(device),
             fc2: LinearConfig::new(1024, 1024)
                 .with_initializer(Initializer::KaimingNormal {
-                    gain: SQRT_2,
+                    gain: 1.0,
                     fan_out_only: false,
                 })
                 .init(device),
             derf2: DerfConfig::new(1024).init(device),
             fc3: LinearConfig::new(1024, 512)
                 .with_initializer(Initializer::KaimingNormal {
-                    gain: SQRT_2,
+                    gain: 1.0,
                     fan_out_only: false,
                 })
                 .init(device),
@@ -53,7 +54,7 @@ impl CriticConfig {
 #[derive(Module, Debug)]
 pub struct Critic<B: Backend> {
     gate: Linear<B>,
-    pub fc1: Linear<B>,
+    fc1: Linear<B>,
     derf1: Derf<B>,
     fc2: Linear<B>,
     derf2: Derf<B>,
@@ -63,9 +64,9 @@ pub struct Critic<B: Backend> {
 }
 
 impl<B: Backend> Critic<B> {
-    pub fn forward(&self, state: Tensor<B, 2>) -> Tensor<B, 2> {
-        let mask = sigmoid(self.gate.forward(state.clone()));
-        let x = state * mask;
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let x = self.gate.forward(x);
+        let x = glu(x, 1);
 
         let x = self.fc1.forward(x);
         let x = self.derf1.forward(x);

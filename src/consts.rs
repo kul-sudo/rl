@@ -1,8 +1,11 @@
 use num::complex::Complex32;
 use std::f32::consts::SQRT_2;
 
+pub const FRAC_1_SQRT_12: f32 = 0.288675129413604736328125; // (1.0 / 12.0).sqrt();
+pub const LOG_SILVER_RATIO: f32 = 0.8813736438751220703125; // (1.0 + SQRT_2).ln();
+
 // Parameters
-pub const BATCH_SIZE: u32 = 128;
+pub const BATCH_SIZE: u32 = 512;
 pub const GAMMA: f32 = 0.995;
 pub const LR_GAMMA: f64 = 0.999;
 pub const N_DIRECTIONS: u32 = 23 + 1; // Last means not moving at all
