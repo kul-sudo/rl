@@ -5,6 +5,7 @@ mod mode;
 mod render;
 mod rl;
 mod training;
+mod utils;
 
 use burn::backend::Autodiff;
 use consts::*;
@@ -13,7 +14,7 @@ use inference::*;
 use macroquad::prelude::*;
 use miniquad::conf::{LinuxBackend, Platform};
 use mode::{MODE, Mode};
-use render::{display::display, utils::Data};
+use render::{data::Data, display::display};
 use std::{
     sync::mpsc::{channel, sync_channel},
     thread::spawn,

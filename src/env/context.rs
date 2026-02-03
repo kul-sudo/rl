@@ -94,12 +94,6 @@ pub struct BallEnv {
     pub target: Target,
 }
 
-pub fn squash(x: f32) -> f32 {
-    x / (1.0 + x.abs())
-}
-
-const BIAS: f32 = 0.5;
-
 impl<B: Backend> Env<B> for BallEnv {
     fn reset(&mut self) {
         *self = Self::new();
@@ -114,29 +108,25 @@ impl<B: Backend> Env<B> for BallEnv {
 
         match perspective {
             Perspective::Pursuer => {
-                let mut context = if wall_blocks {
-                    if self.pursuer.memory.is_none() {
-                        self.pursuer.memory = Some(self.target.pos)
-                    }
-                    let memory = self.pursuer.memory.unwrap();
-                    vec![
-                        self.pursuer.pos.re() - BIAS,
-                        self.pursuer.pos.im() - BIAS,
-                        (memory.re() - self.pursuer.pos.re()) * 0.5,
-                        (memory.im() - self.pursuer.pos.im()) * 0.5,
-                    ]
+                let known_target = if wall_blocks {
+                    self.pursuer.memory.unwrap_or(self.target.pos)
                 } else {
-                    self.pursuer.memory = None;
-                    vec![
-                        self.pursuer.pos.re() - BIAS,
-                        self.pursuer.pos.im() - BIAS,
-                        (self.target.pos.re() - self.pursuer.pos.re()) * 0.5,
-                        (self.target.pos.im() - self.pursuer.pos.im()) * 0.5,
-                    ]
+                    self.target.pos
                 };
 
-                let lasers = self.lasers(true, self.pursuer.pos);
-                context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
+                let diff = known_target - self.pursuer.pos;
+                let dist = diff.abs().max(1e-8);
+                let dir_x = diff.re() / dist;
+                let dir_y = diff.im() / dist;
+
+                let context = vec![
+                    if wall_blocks { 1.0 } else { -1.0 },
+                    (self.pursuer.pos.re() - 0.5) * 2.0,
+                    (self.pursuer.pos.im() - 0.5) * 2.0,
+                    dir_x,
+                    dir_y,
+                    (dist / SQRT_2) * 2.0 - 1.0,
+                ];
 
                 let factors: [f32; PURSUER_FACTORS] = context.try_into().unwrap();
                 (
@@ -145,21 +135,23 @@ impl<B: Backend> Env<B> for BallEnv {
                 )
             }
             Perspective::Target => {
-                let wall_signal = if wall_blocks {
-                    FRAC_1_SQRT_12
-                } else {
-                    -FRAC_1_SQRT_12
-                };
+                let wall_signal = if wall_blocks { 1.0 } else { -1.0 };
 
-                let centered_age = (self.pursuer.age() - BIAS) * FRAC_1_SQRT_12 * 2.0;
+                let centered_age = (self.pursuer.age() - 0.5) * 2.0;
+
+                let diff = self.pursuer.pos - self.target.pos;
+                let dist = diff.abs().max(1e-8);
+                let dir_x = diff.re() / dist;
+                let dir_y = diff.im() / dist;
 
                 let mut context = vec![
                     wall_signal,
                     centered_age,
-                    self.target.pos.re() - BIAS,
-                    self.target.pos.im() - BIAS,
-                    (self.pursuer.pos.re() - self.target.pos.re()) * 0.5,
-                    (self.pursuer.pos.im() - self.target.pos.im()) * 0.5,
+                    (self.target.pos.re() - 0.5) * 2.0,
+                    (self.target.pos.im() - 0.5) * 2.0,
+                    dir_x,
+                    dir_y,
+                    dist / SQRT_2 * 2.0 - 1.0,
                 ];
 
                 let lasers = self.lasers(true, self.target.pos);
@@ -209,11 +201,11 @@ impl<B: Backend> Env<B> for BallEnv {
             self.pursuer.time += 1;
 
             let p_reward = if collision {
-                Tensor::full([1, 1], 0.5, device)
+                Tensor::full([1, 1], 1.0, device)
             } else if expired {
-                Tensor::full([1, 1], -0.5, device)
+                Tensor::full([1, 1], -1.0, device)
             } else {
-                Tensor::full([1, 1], distance_change * 0.05, device)
+                Tensor::full([1, 1], distance_change * 0.6, device)
             };
 
             Step::new(
@@ -229,21 +221,20 @@ impl<B: Backend> Env<B> for BallEnv {
             let (state, wall_blocks) = self.state_tensor(Perspective::Target, device);
 
             let t_reward = if collision {
-                Tensor::full([1, 1], -0.5, device)
+                Tensor::full([1, 1], -1.0, device)
             } else if expired {
-                Tensor::full([1, 1], 0.5, device)
+                Tensor::full([1, 1], 1.0, device)
             } else {
-                let dist_reward = ((new_distance + 1.0).ln() / LOG_SILVER_RATIO) - BIAS;
-
                 let hide_reward = match (initial.wall_blocks(), wall_blocks) {
-                    (false, true) => 0.1,
-                    (true, true) => 0.02,
-                    _ => -0.05,
+                    (false, true) => 1.0,
+                    (false, false) => -0.1,
+                    (true, true) => 0.2,
+                    (true, false) => -1.0,
                 };
 
-                let total = (dist_reward + hide_reward) * 0.5;
+                let total = -distance_change * 0.6 + hide_reward;
 
-                Tensor::full([1, 1], squash(total), device)
+                Tensor::full([1, 1], total, device)
             };
 
             Step::new(
@@ -329,8 +320,9 @@ impl BallEnv {
             });
 
             let normalized = toi / SQRT_2;
-            let proximity = (1.0 - normalized).max(0.0) * FRAC_1_SQRT_12;
-            let relative = c32(dir.x * proximity, dir.y * proximity);
+            let proximity = (1.0 - normalized).max(0.0);
+            let intensity = proximity * 2.0 - 1.0;
+            let relative = c32(dir.x * intensity, dir.y * intensity);
 
             lasers.push(relative);
         }

@@ -1,6 +1,6 @@
 use crate::consts::*;
 use crate::env::context::{Env, Perspective};
-use crate::render::utils::Data;
+use crate::render::data::Data;
 use crate::rl::{
     actor::{Actor, ActorConfig},
     stochastic::gumbel_sample,

@@ -3,7 +3,7 @@ use crate::env::{
     batch::BatchCollector,
     context::{Env, Perspective},
 };
-use crate::render::utils::Data;
+use crate::render::data::Data;
 use crate::rl::{
     actor::{Actor, ActorConfig},
     critic::{Critic, CriticConfig},
@@ -23,7 +23,7 @@ use burn::{
     prelude::ToElement,
     record::CompactRecorder,
     tensor::{
-        Tensor,
+        Bool, Tensor,
         activation::log_softmax,
         backend::{AutodiffBackend, Backend},
         ops::{BoolTensor, FloatTensor},
@@ -143,8 +143,11 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
     let values = flat_values.clone().reshape([1, BATCH_SIZE]);
     let bootstrap = critic.forward(next_state).detach();
 
+    let (var, mean) = rollout.rewards.clone().var_mean(0);
+    let normalized_rewards = rollout.rewards.sub(mean).div(var.sqrt().add_scalar(1e-8));
+
     let advantage = gae_custom(
-        rollout.rewards,
+        normalized_rewards,
         values.detach(),
         rollout.dones,
         rollout.terminated,
@@ -153,6 +156,27 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
     )
     .reshape([BATCH_SIZE, 1])
     .detach();
+
+    // let gpu_res = gae_custom(
+    //     normalized_rewards.clone(),
+    //     values.clone().detach(),
+    //     rollout.dones.clone(),
+    //     rollout.terminated.clone(),
+    //     bootstrap.clone(),
+    //     &device,
+    // );
+    //
+    // let cpu_res = gae_cpu_reference(
+    //     normalized_rewards,
+    //     values.detach(),
+    //     rollout.dones,
+    //     rollout.terminated,
+    //     bootstrap.clone(),
+    //     GAMMA,
+    // );
+
+    // let diff = (gpu_res - cpu_res).abs().mean().into_scalar().to_f32();
+    // dbg!(diff);
 
     let td_target = advantage.clone() + flat_values.clone().detach();
 
@@ -188,6 +212,66 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
 }
 
 impl<B: GaeBackend> GaeAutodiffBackend for Autodiff<B> {}
+
+fn gae_cpu_reference<B: Backend>(
+    rewards: Tensor<B, 2>, // [BATCH_SIZE, 1]
+    values: Tensor<B, 2>,  // [1, BATCH_SIZE]
+    dones: Tensor<B, 2, Bool>,
+    terminated: Tensor<B, 2, Bool>,
+    bootstrap: Tensor<B, 2>, // [1, 1]
+    gamma: f32,
+) -> Tensor<B, 2> {
+    let steps = BATCH_SIZE as usize;
+    let mut advantages = vec![0.0; steps];
+
+    let rewards_vec: Vec<f32> = rewards
+        .clone()
+        .into_data()
+        .convert::<f32>()
+        .to_vec()
+        .unwrap();
+    let values_vec: Vec<f32> = values.into_data().convert::<f32>().to_vec().unwrap();
+    let dones_vec: Vec<bool> = dones
+        .into_data()
+        .convert::<u8>()
+        .to_vec()
+        .unwrap()
+        .into_iter()
+        .map(|v: u8| v != 0_u8)
+        .collect();
+
+    let term_vec: Vec<bool> = terminated
+        .into_data()
+        .convert::<u8>()
+        .to_vec()
+        .unwrap()
+        .into_iter()
+        .map(|v: u8| v != 0_u8)
+        .collect();
+
+    let last_v = bootstrap.into_scalar().to_f32();
+
+    let mut last_gae = 0.0;
+
+    for t in (0..steps).rev() {
+        let v_next = if t == steps - 1 {
+            last_v
+        } else {
+            values_vec[t + 1]
+        };
+
+        let b_mask = if !term_vec[t] { 1.0 } else { 0.0 };
+        let d_mask = if !dones_vec[t] { 1.0 } else { 0.0 };
+
+        let delta = rewards_vec[t] + (gamma * v_next * b_mask) - values_vec[t];
+        let advantage = delta + (gamma * 0.95 * d_mask * last_gae);
+
+        advantages[t] = advantage;
+        last_gae = advantage;
+    }
+
+    Tensor::<B, 1>::from_data(advantages.as_slice(), &rewards.device()).reshape([BATCH_SIZE, 1])
+}
 
 pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
     mut env: E,

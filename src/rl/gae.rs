@@ -26,38 +26,51 @@ pub fn fused_gae_kernel<F: Float>(
     advantages: &mut CubeTensorFrontend<F>,
 ) {
     let t = UNIT_POS as usize;
-    let steps = comptime!(BATCH_SIZE as usize);
+    let n = comptime!(BATCH_SIZE as usize);
+
+    let num_iters = comptime!(BATCH_SIZE.trailing_zeros());
+
     let gamma = F::new(comptime!(GAMMA));
     let gl = F::new(comptime!(GAMMA * LAMBDA));
 
-    let mut shared_deltas = SharedMemory::<F>::new(comptime!(BATCH_SIZE as usize));
-    let mut shared_dones = SharedMemory::<bool>::new(comptime!(BATCH_SIZE as usize));
+    let mut sh_delta = SharedMemory::<F>::new(n);
+    let mut sh_alpha = SharedMemory::<F>::new(n);
 
-    if t < steps {
-        let v_next = if t == steps - 1 {
+    if t < n {
+        let v_next = if t == n - 1 {
             bootstrap_values[0]
         } else {
             values[t + 1]
         };
+        let b_mask = F::cast_from(!terminated[t]);
+        let d_mask = F::cast_from(!dones[t]);
 
-        let boot_mask = F::cast_from(!terminated[t]);
-        shared_deltas[t] = rewards[t] + (gamma * v_next * boot_mask) - values[t];
-        shared_dones[t] = dones[t];
+        sh_delta[t] = rewards[t] + (gamma * v_next * b_mask) - values[t];
+        sh_alpha[t] = gl * d_mask;
+    }
+
+    let mut offset = 1;
+
+    #[unroll]
+    for _ in 0..num_iters {
+        sync_cube();
+
+        if t < n - offset {
+            let next_idx = t + offset;
+
+            let d_future = sh_delta[next_idx];
+            let a_future = sh_alpha[next_idx];
+
+            sh_delta[t] += sh_alpha[t] * d_future;
+            sh_alpha[t] *= a_future;
+        }
+        offset *= 2;
     }
 
     sync_cube();
 
-    if t == 0 {
-        let mut last_adv = F::new(0.0);
-
-        for i in 0..steps {
-            let idx = steps - 1 - i;
-
-            let done_mask = F::cast_from(!shared_dones[idx]);
-            let adv = shared_deltas[idx] + (gl * done_mask * last_adv);
-            advantages[idx] = adv;
-            last_adv = adv;
-        }
+    if t < n {
+        advantages[t] = sh_delta[t];
     }
 }
 
@@ -74,6 +87,7 @@ pub fn compute_gae_fused<R: CubeRuntime, F: FloatElement>(
     let rewards = into_contiguous(rewards);
     let values = into_contiguous(values);
     let dones = into_contiguous(dones);
+    let terminated = into_contiguous(terminated);
 
     let shape = rewards.shape.clone();
     let byte_size = shape.num_elements() * core::mem::size_of::<F>();

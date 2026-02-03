@@ -1,4 +1,4 @@
-use super::utils::Data;
+use super::data::Data;
 use crate::consts::*;
 use crate::env::{context::BallEnv, walls::WALLS};
 use crate::mode::{MODE, Mode};
