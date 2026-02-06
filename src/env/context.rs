@@ -155,7 +155,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 ];
 
                 let lasers = self.lasers(true, self.target.pos);
-                context.extend(lasers.iter().flat_map(|laser| [laser.re(), laser.im()]));
+                context.extend_from_slice(&lasers);
 
                 let factors: [f32; TARGET_FACTORS] = context.try_into().unwrap();
                 (
@@ -193,7 +193,9 @@ impl<B: Backend> Env<B> for BallEnv {
 
         let prev_distance = (initial.pursuer.pos - initial.target.pos).abs();
         let new_distance = (self.pursuer.pos - self.target.pos).abs();
-        let distance_change = (prev_distance - new_distance) / (PURSUER_SPEED + TARGET_SPEED);
+
+        // If the numerator is 1/x, x perfect distance-wise steps are the same as 1 maximum reward.
+        let distance_reward_factor: f32 = 0.05 / (PURSUER_SPEED + TARGET_SPEED);
 
         let p_step = {
             let (state, _) = self.state_tensor(Perspective::Pursuer, device);
@@ -205,7 +207,12 @@ impl<B: Backend> Env<B> for BallEnv {
             } else if expired {
                 Tensor::full([1, 1], -1.0, device)
             } else {
-                Tensor::full([1, 1], distance_change * 0.6, device)
+                let distance_reward =
+                    (GAMMA as f32 * prev_distance - new_distance) * distance_reward_factor;
+
+                dbg!(distance_reward);
+
+                Tensor::full([1, 1], distance_reward, device)
             };
 
             Step::new(
@@ -226,13 +233,16 @@ impl<B: Backend> Env<B> for BallEnv {
                 Tensor::full([1, 1], 1.0, device)
             } else {
                 let hide_reward = match (initial.wall_blocks(), wall_blocks) {
-                    (false, true) => 1.0,
-                    (false, false) => -0.1,
-                    (true, true) => 0.2,
-                    (true, false) => -1.0,
+                    (false, false) => -0.01,
+                    (false, true) => 0.5,
+                    (true, true) => 0.01,
+                    (true, false) => -0.5,
                 };
 
-                let total = -distance_change * 0.6 + hide_reward;
+                let distance_reward =
+                    (GAMMA as f32 * new_distance - prev_distance) * distance_reward_factor;
+
+                let total = distance_reward + hide_reward;
 
                 Tensor::full([1, 1], total, device)
             };
@@ -281,7 +291,7 @@ impl BallEnv {
         wall_hit.is_some_and(|hit| hit < distance)
     }
 
-    fn lasers(&self, walls: bool, origin: Complex32) -> Vec<Complex32> {
+    fn lasers(&self, walls: bool, origin: Complex32) -> Vec<f32> {
         let origin = Point::new(origin.re(), origin.im());
 
         let mut lasers = Vec::with_capacity(N_LASERS);
@@ -321,10 +331,8 @@ impl BallEnv {
 
             let normalized = toi / SQRT_2;
             let proximity = (1.0 - normalized).max(0.0);
-            let intensity = proximity * 2.0 - 1.0;
-            let relative = c32(dir.x * intensity, dir.y * intensity);
 
-            lasers.push(relative);
+            lasers.push(proximity);
         }
 
         lasers
