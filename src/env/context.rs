@@ -194,8 +194,9 @@ impl<B: Backend> Env<B> for BallEnv {
         let prev_distance = (initial.pursuer.pos - initial.target.pos).abs();
         let new_distance = (self.pursuer.pos - self.target.pos).abs();
 
-        // If the numerator is 1/x, x perfect distance-wise steps are the same as 1 maximum reward.
-        let distance_reward_factor: f32 = 0.05 / (PURSUER_SPEED + TARGET_SPEED);
+        const STEPS_TO_MAX_REWARD: f32 = (PURSUER_TIME_CAP as f32 * 0.005).floor();
+        let distance_reward_factor: f32 =
+            1.0 / (STEPS_TO_MAX_REWARD * (PURSUER_SPEED + TARGET_SPEED));
 
         let p_step = {
             let (state, _) = self.state_tensor(Perspective::Pursuer, device);
@@ -208,9 +209,7 @@ impl<B: Backend> Env<B> for BallEnv {
                 Tensor::full([1, 1], -1.0, device)
             } else {
                 let distance_reward =
-                    (GAMMA as f32 * prev_distance - new_distance) * distance_reward_factor;
-
-                dbg!(distance_reward);
+                    (prev_distance - new_distance) * distance_reward_factor - 0.01;
 
                 Tensor::full([1, 1], distance_reward, device)
             };
@@ -233,16 +232,16 @@ impl<B: Backend> Env<B> for BallEnv {
                 Tensor::full([1, 1], 1.0, device)
             } else {
                 let hide_reward = match (initial.wall_blocks(), wall_blocks) {
-                    (false, false) => -0.01,
+                    (false, false) => -0.005,
                     (false, true) => 0.5,
-                    (true, true) => 0.01,
+                    (true, true) => 0.05,
                     (true, false) => -0.5,
                 };
 
-                let distance_reward =
-                    (GAMMA as f32 * new_distance - prev_distance) * distance_reward_factor;
-
+                let distance_reward = (new_distance - prev_distance) * distance_reward_factor;
                 let total = distance_reward + hide_reward;
+
+                dbg!(total);
 
                 Tensor::full([1, 1], total, device)
             };
@@ -308,25 +307,29 @@ impl BallEnv {
                 None
             }
             .unwrap_or_else(|| {
-                let vertical = if cos > 0.0 {
-                    (1.0 - origin.x) / cos
-                } else if cos < 0.0 {
-                    -origin.x / cos
+                let vertical = if cos.abs() > f32::EPSILON {
+                    if cos > 0.0 {
+                        (1.0 - origin.x) / cos
+                    } else {
+                        -origin.x / cos
+                    }
                 } else {
                     f32::INFINITY
                 };
 
-                let horizontal = if sin > 0.0 {
-                    (1.0 - origin.y) / sin
-                } else if sin < 0.0 {
-                    -origin.y / sin
+                let horizontal = if sin.abs() > f32::EPSILON {
+                    if sin > 0.0 {
+                        (1.0 - origin.y) / sin
+                    } else {
+                        -origin.y / sin
+                    }
                 } else {
                     f32::INFINITY
                 };
 
                 // Using the Pythagorean identity, we can derive that both sine and cosine can't be
                 // zero.
-                vertical.min(horizontal)
+                vertical.min(horizontal).abs()
             });
 
             let normalized = toi / SQRT_2;

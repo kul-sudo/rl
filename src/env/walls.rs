@@ -1,32 +1,32 @@
-use num::complex::{Complex32, ComplexFloat, c32};
+use num::complex::{Complex32, ComplexFloat};
 use parry2d::{
     math::{Isometry, Point},
     query::PointQuery,
     shape::{Compound, SharedShape},
 };
-use std::sync::LazyLock;
+use std::{f32::consts::TAU, sync::LazyLock};
 
+pub const CORNERS: usize = 8;
 pub const WALL_SIZE: f32 = 0.05;
-pub static WALLS_POS: [Complex32; 5] = [
-    Complex32::new(0.2, 0.5),
-    Complex32::new(0.2, 0.2),
-    Complex32::new(0.6, 0.2),
-    Complex32::new(0.7, 0.8),
-    Complex32::new(0.8, 0.5),
-];
+pub const CENTER: Complex32 = Complex32::new(0.5, 0.5);
+pub const RADIUS: f32 = 0.3;
+
 pub static WALLS: LazyLock<Compound> = LazyLock::new(|| {
-    Compound::new(
-        WALLS_POS
-            .into_iter()
-            .map(|pos| {
-                let scaled = c32(pos.re(), pos.im());
-                (
-                    Isometry::translation(scaled.re(), scaled.im()),
-                    SharedShape::cuboid(WALL_SIZE, WALL_SIZE),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
+    let shapes = (0..CORNERS)
+        .map(|i| {
+            let angle = TAU * (i as f32) / CORNERS as f32;
+
+            let offset = Complex32::from_polar(RADIUS, angle);
+            let pos = CENTER + offset;
+
+            (
+                Isometry::translation(pos.re(), pos.im()),
+                SharedShape::cuboid(WALL_SIZE, WALL_SIZE),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    Compound::new(shapes)
 });
 
 pub fn pos_invalid(pos: &Complex32) -> bool {

@@ -176,7 +176,6 @@ pub struct UpdateContext<'a, B: GaeAutodiffBackend> {
     pub next_state: Tensor<B, 2>,
     pub curiosity: f32,
     pub reward_norm: &'a RunningStats<B, 2>,
-    pub advantage_norm: &'a RunningStats<B, 2>,
     pub state_norm: &'a RunningStats<B, 2>,
     pub device: &'a B::Device,
 }
@@ -199,7 +198,6 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
         next_state,
         curiosity,
         reward_norm,
-        advantage_norm,
         state_norm,
         device,
     } = context;
@@ -236,6 +234,10 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
     .reshape([BATCH_SIZE, 1])
     .detach();
 
+    let (adv_var, adv_mean) = advantage.clone().var_mean(0);
+    let adv_std = (adv_var + 1e-8).sqrt();
+    let advantage_normalized = (advantage.clone() - adv_mean).div(adv_std);
+
     // let gpu_res = gae_custom(
     //     normalized_rewards.clone(),
     //     values.clone().detach(),
@@ -260,10 +262,7 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
     let td_target = advantage.clone() + flat_values.clone().detach();
 
     let critic_lr = critic_scheduler.step();
-    dbg!(critic_lr);
     let critic_loss = MseLoss::new().forward(flat_values, td_target, Reduction::Mean);
-
-    println!("{}", critic_loss.clone().into_scalar().to_f32());
 
     *critic = critic_optimizer.step(
         critic_lr,
@@ -277,8 +276,6 @@ fn update_agent<B: GaeAutodiffBackend>(context: UpdateContext<B>) {
 
     let entropy_loss = -(probs * log_probs.clone()).sum_dim(1).mean();
     let pick = log_probs.gather(1, rollout.actions);
-
-    let advantage_normalized = advantage_norm.normalize(advantage);
 
     let actor_lr = actor_scheduler.step();
     let actor_loss = -(pick * advantage_normalized).mean() - curiosity * entropy_loss;
@@ -316,13 +313,13 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
 
     // Critic optimizers
     let mut pc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-3)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-3)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
     let mut tc_optimizer = AdamWConfig::new()
-        // .with_cautious_weight_decay(true)
-        // .with_weight_decay(1e-3)
+        .with_cautious_weight_decay(true)
+        .with_weight_decay(1e-3)
         .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
         .init();
 
@@ -340,10 +337,8 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
 
     let p_reward_norm =
         RunningStats::<B, 2>::new([BATCH_SIZE as usize, 1], Approach::Scale, &device);
-    let p_adv_norm = RunningStats::<B, 2>::new([BATCH_SIZE as usize, 1], Approach::ZScore, &device);
     let t_reward_norm =
         RunningStats::<B, 2>::new([BATCH_SIZE as usize, 1], Approach::Scale, &device);
-    let t_adv_norm = RunningStats::<B, 2>::new([BATCH_SIZE as usize, 1], Approach::ZScore, &device);
 
     let p_state_norm = RunningStats::<B, 2>::new([1, PURSUER_FACTORS], Approach::ZScore, &device);
     let t_state_norm = RunningStats::<B, 2>::new([1, TARGET_FACTORS], Approach::ZScore, &device);
@@ -394,7 +389,6 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                     next_state: p_state.clone(),
                     curiosity: *curiosity,
                     reward_norm: &p_reward_norm,
-                    advantage_norm: &p_adv_norm,
                     state_norm: &p_state_norm,
                     device: &device,
                 };
@@ -416,7 +410,6 @@ pub fn training<B: GaeAutodiffBackend, E: Env<B> + Clone>(
                     next_state: t_state.clone(),
                     curiosity: *curiosity,
                     reward_norm: &t_reward_norm,
-                    advantage_norm: &t_adv_norm,
                     state_norm: &t_state_norm,
                     device: &device,
                 };
